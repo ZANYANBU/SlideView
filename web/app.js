@@ -194,21 +194,21 @@ const inflight = new Map();
    under the other. The main view and the filmstrip both want page N, so every
    job for a page is chained behind the previous one. */
 const pageLock = new Map();
-function withPage(n, fn) {
-  const prev = pageLock.get(n) || Promise.resolve();
+function withPage(key, fn) {
+  const prev = pageLock.get(key) || Promise.resolve();
   const next = prev.catch(() => {}).then(fn);
-  pageLock.set(n, next.catch(() => {}));
+  pageLock.set(key, next.catch(() => {}));
   return next;
 }
 
 function renderPage(n, width, thumb = false) {
-  const key = `${n}|${Math.round(width)}|${S.theme}`;
+  const key = `${S.doc ? S.doc.id : '-'}|${n}|${Math.round(width)}|${S.theme}`;
   const cache = thumb ? cacheThumb : cacheMain;
   const hit = cache.get(key);
   if (hit) return Promise.resolve(hit);
   if (inflight.has(key)) return inflight.get(key);
 
-  const job = withPage(n, async () => {
+  const job = withPage(`${S.doc ? S.doc.id : '-'}|${n}`, async () => {
     const page = await S.pdf.getPage(n);
     const base = page.getViewport({ scale: 1 });
     const scale = width / base.width;
@@ -316,6 +316,7 @@ function card(d) {
       ${art}
       <span class="badge">${d.ext}</span>
       ${stars ? `<span class="badge star">★ ${stars}</span>` : ''}
+      ${d.notes ? `<span class="card-note">✎ ${d.notes}</span>` : ''}
       ${pct ? `<div class="card-bar"><i style="width:${pct}%"></i></div>` : ''}
     </div>
     <div class="card-name">${esc(d.name)}</div>
@@ -330,57 +331,165 @@ function showScreen(which) {
   document.body.dataset.screen = which;
 }
 
-async function openDoc(id) {
+/* ── tabs ───────────────────────────────────────────────────────────
+   S mirrors the *active* tab. Switching stashes S back into the old tab
+   and adopts the new one, so the rest of the viewer code stays unaware
+   that more than one deck is open. Render caches are keyed by document,
+   so switching back to a tab is instant. */
+const TABS = [];
+let cur = null;
+const TAB_FIELDS = ['doc', 'pdf', 'page', 'total', 'aspect', 'zoom', 'fitMode',
+                    'stars', 'text', 'textDone', 'notes'];
+
+function stash() { if (cur) for (const k of TAB_FIELDS) cur[k] = S[k]; }
+function adopt(t) { cur = t; for (const k of TAB_FIELDS) S[k] = t[k]; }
+
+function newTab(d) {
+  return { docId: d.id, doc: d, pdf: null, page: 1, total: 0, aspect: 16 / 9,
+           zoom: 1, fitMode: 'fit', stars: new Set(), text: null, textDone: 0,
+           notes: {}, loading: false };
+}
+
+function renderTabs() {
+  $('#tabbar').hidden = TABS.length < 2;
+  $('#tabs').innerHTML = TABS.map((t, i) => {
+    const n = Object.keys(t.notes || {}).length;
+    return `<button class="tab ${t === cur ? 'on' : ''}" data-i="${i}" title="${esc(t.doc.name)}">
+      ${n ? '<span class="tab-dot"></span>' : ''}
+      <span class="tab-name">${esc(t.doc.name)}</span>
+      <span class="tab-x" title="Close tab (⌘W)">✕</span>
+    </button>`;
+  }).join('');
+}
+
+async function openDoc(id, opts = {}) {
+  const open = TABS.find(t => t.docId === id);
+  if (open) return switchTab(open);
   const d = findDoc(id);
   if (!d) return;
-  S.doc = d; S.page = 1; S.pdf = null; S.text = null; S.textDone = 0;
-  S.zoom = 1; S.fitMode = 'fit';
-  dropCaches();
-  showScreen('viewer');
-  closePanels();
-  $('#docTitle').textContent = d.name;
-  $('#docSub').textContent = d.subject;
-  $('.vbar').dataset.title = d.name;
-  send('title', { text: d.name });
-  setLoading(true, 'Opening…');
 
-  if (d.state !== 'ready') {
-    setLoading(true, 'Converting with LibreOffice…', 'First open only — the PDF is cached afterwards.');
-    fetch('/api/convert?id=' + id);
-    const ok = await waitReady(id);
-    if (!ok) return;
-  }
-
-  try {
-    S.pdf = await pdfjsLib.getDocument({ url: '/api/pdf?id=' + id, disableRange: true, disableStream: true }).promise;
-  } catch (e) {
-    setLoading(true, 'Could not open this document', String(e?.message || e));
+  const t = newTab(d);
+  if (opts.background && cur) {
+    TABS.push(t); renderTabs();
+    loadTabDoc(t).then(renderTabs);
+    toast(`${d.name} opened in a tab`);
     return;
   }
-  S.total = S.pdf.numPages;
-  $('#pageTotal').textContent = S.total;
-  const p1 = await S.pdf.getPage(1);
-  const vp = p1.getViewport({ scale: 1 });
-  S.aspect = vp.width / vp.height;
+  await flushNote();
+  stash();
+  TABS.push(t);
+  adopt(t);
+  showScreen('viewer');
+  renderTabs();
+  await activate(t);
+}
 
-  S.stars = new Set(store.get(`sv:stars:${id}`, []));
-  S.page = clamp(store.get(`sv:pos:${id}`, 1), 1, S.total);
+async function switchTab(t) {
+  if (t === cur) { showScreen('viewer'); return; }
+  await flushNote();
+  stash();
+  adopt(t);
+  showScreen('viewer');
+  renderTabs();
+  await activate(t);
+}
+
+function cycleTab(dir) {
+  if (TABS.length < 2) return;
+  const i = TABS.indexOf(cur);
+  switchTab(TABS[(i + dir + TABS.length) % TABS.length]);
+}
+
+async function closeTab(t) {
+  const i = TABS.indexOf(t);
+  if (i < 0) return;
+  if (t === cur) await flushNote();
+  TABS.splice(i, 1);
+  try { t.pdf?.destroy(); } catch {}
+  if (t !== cur) return renderTabs();
+
+  cur = null;
+  if (TABS.length) {
+    const next = TABS[Math.min(i, TABS.length - 1)];
+    adopt(next);
+    renderTabs();
+    showScreen('viewer');
+    await activate(next);
+  } else {
+    S.doc = null; S.pdf = null; S.total = 0;
+    renderTabs();
+    toLibrary();
+  }
+}
+
+/* Fill a tab with its PDF. Safe to run for a background tab. */
+async function loadTabDoc(t) {
+  if (t.loading || t.pdf) return !!t.pdf;
+  t.loading = true;
+  try {
+    if (t.doc.state !== 'ready') {
+      if (cur === t) setLoading(true, 'Converting with LibreOffice…',
+                                'First open only — the PDF is cached afterwards.');
+      fetch('/api/convert?id=' + t.docId);
+      if (!await waitReady(t.docId, t)) return false;
+      t.doc.state = 'ready';
+    }
+    const pdf = await pdfjsLib.getDocument({
+      url: '/api/pdf?id=' + t.docId, disableRange: true, disableStream: true }).promise;
+    t.pdf = pdf;
+    t.total = pdf.numPages;
+    const p1 = await pdf.getPage(1);
+    const vp = p1.getViewport({ scale: 1 });
+    t.aspect = vp.width / vp.height;
+    t.stars = new Set(store.get(`sv:stars:${t.docId}`, []));
+    t.page = clamp(store.get(`sv:pos:${t.docId}`, 1), 1, t.total);
+    try { t.notes = await (await fetch('/api/notes?id=' + t.docId)).json(); } catch { t.notes = {}; }
+    if (cur === t) adopt(t);
+    return true;
+  } catch (e) {
+    if (cur === t) setLoading(true, 'Could not open this document', String(e?.message || e));
+    return false;
+  } finally {
+    t.loading = false;
+  }
+}
+
+async function activate(t) {
+  closePanels();
+  $('#docTitle').textContent = t.doc.name;
+  $('#docSub').textContent = t.doc.subject;
+  $('.vbar').dataset.title = t.doc.name;
+  send('title', { text: t.doc.name });
   $('#filmstrip').hidden = !S.strip;
   $('#stripBtn').classList.toggle('on', S.strip);
+  $('#notes').hidden = !store.get('sv:notes', false);
+  $('#notesBtn').classList.toggle('on', !$('#notes').hidden);
+
+  if (!t.pdf) {
+    setLoading(true, 'Opening…');
+    if (!await loadTabDoc(t)) return;
+    if (cur !== t) return;
+    adopt(t);
+  }
+  $('#pageTotal').textContent = S.total;
   setLoading(false);
   await show(S.page, false);
   buildStrip();
-  indexText();
+  showNote();
+  if (!t.text) indexText();
 }
 
-async function waitReady(id) {
+async function waitReady(id, tab) {
   for (;;) {
     await new Promise(r => setTimeout(r, 600));
+    if (tab && !TABS.includes(tab)) return false;          // tab was closed
     const st = await (await fetch('/api/state?id=' + id)).json();
     if (st.state === 'ready') { const d = findDoc(id); if (d) d.state = 'ready'; return true; }
     if (st.state === 'error') {
-      setLoading(true, 'Conversion failed', st.message || '');
-      $('#loading .spinner').style.display = 'none';
+      if (!tab || cur === tab) {
+        setLoading(true, 'Conversion failed', st.message || '');
+        $('#loading .spinner').style.display = 'none';
+      }
       return false;
     }
   }
@@ -409,7 +518,9 @@ function targetWidth() {
 
 async function show(n, animate = true) {
   if (!S.pdf) return;
-  S.page = clamp(n, 1, S.total);
+  const target = clamp(n, 1, S.total);
+  if (target !== S.page) flushNote();     // never lose what was just typed
+  S.page = target;
   const tok = ++S.token;
   const cssW = targetWidth();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -434,7 +545,7 @@ async function show(n, animate = true) {
   $('#stage').classList.toggle('zoomed', S.zoom > 1.02);
   if (animate) { wrap.classList.remove('turn'); void wrap.offsetWidth; wrap.classList.add('turn'); }
 
-  store.set(`sv:pos:${S.doc.id}`, S.page);
+  if (S.doc) store.set(`sv:pos:${S.doc.id}`, S.page);
   idle(() => prefetch(devW));
 }
 
@@ -456,8 +567,10 @@ function updateChrome() {
   $('#slideBadge').hidden = !starred;
   $('#slideBadge').textContent = '★';
   $('#scrubFill').style.width = (S.total > 1 ? (S.page - 1) / (S.total - 1) * 100 : 0) + '%';
-  $('#scrubMarks').innerHTML = [...S.stars].map(p =>
-    `<i style="left:${S.total > 1 ? (p - 1) / (S.total - 1) * 100 : 0}%"></i>`).join('');
+  const at = p => (S.total > 1 ? (p - 1) / (S.total - 1) * 100 : 0);
+  $('#scrubMarks').innerHTML =
+    [...S.stars].map(p => `<i style="left:${at(p)}%"></i>`).join('') +
+    Object.keys(S.notes || {}).map(p => `<i class="note" style="left:${at(+p)}%"></i>`).join('');
   $('#footLeft').textContent = `${S.doc?.subject || ''} — ${S.doc?.name || ''}`;
   $('#footRight').textContent = `${S.page} of ${S.total}` + (S.stars.size ? `  ·  ★ ${S.stars.size}` : '')
     + (S.zoom > 1.02 ? `  ·  ${Math.round(S.zoom * 100)}%` : '');
@@ -465,6 +578,7 @@ function updateChrome() {
     el.classList.toggle('on', +el.dataset.n === S.page));
   const on = $(`#filmstrip .fs-item[data-n="${S.page}"]`);
   if (on && S.strip) on.scrollIntoView({ block: 'nearest' });
+  if (!$('#notes').hidden) showNote();
 }
 
 /* ─────────────  filmstrip  ───────────── */
@@ -479,7 +593,8 @@ function buildStrip() {
     const b = document.createElement('button');
     b.className = 'fs-item'; b.dataset.n = n;
     b.innerHTML = `<div class="fs-ph"></div><span class="fs-num">${n}</span>` +
-      (S.stars.has(n) ? '<span class="fs-star">★</span>' : '');
+      (S.stars.has(n) ? '<span class="fs-star">★</span>' : '') +
+      (S.notes && S.notes[n] ? '<span class="fs-note"></span>' : '');
     frag.appendChild(b);
   }
   strip.appendChild(frag);
@@ -507,7 +622,7 @@ async function indexText() {
   for (let n = 1; n <= S.total; n++) {
     if (S.doc !== doc || S.pdf !== pdf) return;
     try {
-      S.text[n - 1] = await withPage(n, async () => {
+      S.text[n - 1] = await withPage(`${doc.id}|${n}`, async () => {
         const p = await pdf.getPage(n);
         const tc = await p.getTextContent();
         return tc.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
@@ -577,6 +692,92 @@ function renderStars() {
     : '<div class="panel-empty">Press <b>S</b> on a slide worth coming back to</div>';
 }
 
+/* ── per-slide notes ────────────────────────────────────────────────
+   Saved on the server (JSON per deck) rather than in localStorage, so a
+   cleared cache cannot take your revision notes with it. Writes are
+   debounced, and always flushed before the page or tab changes. */
+let notePending = null, noteTimer = null;
+
+function noteCountText() {
+  const n = Object.keys(S.notes || {}).length;
+  return n ? `${n} note${n === 1 ? '' : 's'} in this deck` : '';
+}
+
+function showNote() {
+  const el = $('#noteText');
+  if (document.activeElement === el && notePending) return;   // mid-edit
+  el.value = (S.notes || {})[S.page] || '';
+  $('#notesPage').textContent = S.total ? `Slide ${S.page} of ${S.total}` : '';
+  $('#noteCount').textContent = noteCountText();
+}
+
+function queueNote(docId, page, text) {
+  notePending = { docId, page, text };
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(flushNote, 400);
+}
+
+async function flushNote() {
+  clearTimeout(noteTimer);
+  const p = notePending;
+  notePending = null;
+  if (!p) return;
+  try {
+    await fetch(`/api/notes?id=${p.docId}&page=${p.page}`, { method: 'POST', body: p.text });
+    $('#noteStatus').textContent = 'Saved';
+    setTimeout(() => {
+      if ($('#noteStatus').textContent === 'Saved') $('#noteStatus').textContent = '';
+    }, 1400);
+  } catch {
+    $('#noteStatus').textContent = 'Could not save';
+  }
+  renderTabs();
+}
+
+function noteEdited() {
+  if (!S.doc) return;
+  const v = $('#noteText').value;
+  if (!S.notes) S.notes = {};
+  if (v.trim()) S.notes[S.page] = v; else delete S.notes[S.page];
+  if (cur) cur.notes = S.notes;
+  $('#noteStatus').textContent = 'Saving…';
+  $('#noteCount').textContent = noteCountText();
+  queueNote(S.doc.id, S.page, v);
+
+  const it = $(`#filmstrip .fs-item[data-n="${S.page}"]`);
+  if (it) {
+    it.querySelector('.fs-note')?.remove();
+    if (S.notes[S.page]) it.insertAdjacentHTML('beforeend', '<span class="fs-note"></span>');
+  }
+}
+
+function toggleNotes(force) {
+  const el = $('#notes');
+  const on = force === undefined ? el.hidden : force;
+  el.hidden = !on;
+  $('#notesBtn').classList.toggle('on', on);
+  store.set('sv:notes', on);
+  if (on) { showNote(); setTimeout(() => $('#noteText').focus(), 30); }
+  if (S.pdf) show(S.page, false);
+}
+
+function jumpNote(dir) {
+  const arr = Object.keys(S.notes || {}).map(Number).sort((a, b) => a - b);
+  if (!arr.length) return toast('No notes in this deck yet');
+  const next = dir > 0 ? arr.find(p => p > S.page) ?? arr[0]
+                       : [...arr].reverse().find(p => p < S.page) ?? arr[arr.length - 1];
+  show(next);
+}
+
+function exportNotes() {
+  const arr = Object.keys(S.notes || {}).map(Number).sort((a, b) => a - b);
+  if (!arr.length) return toast('No notes in this deck yet');
+  const md = `# ${S.doc.name} — notes\n\n` +
+    arr.map(p => `## Slide ${p}\n\n${S.notes[p]}\n`).join('\n');
+  send('copyText', { text: md });
+  toast(`Copied ${arr.length} note${arr.length === 1 ? '' : 's'} as Markdown`);
+}
+
 let toastTimer = null;
 function toast(msg) {
   const t = $('#toast');
@@ -606,7 +807,12 @@ function setZoom(z) {
 }
 
 $('#grid').addEventListener('click', e => {
-  const c = e.target.closest('.card'); if (c) openDoc(c.dataset.id);
+  const c = e.target.closest('.card');
+  if (c) openDoc(c.dataset.id, { background: e.metaKey || e.ctrlKey });
+});
+$('#grid').addEventListener('auxclick', e => {
+  const c = e.target.closest('.card');
+  if (c && e.button === 1) { e.preventDefault(); openDoc(c.dataset.id, { background: true }); }
 });
 $('#subjectNav').addEventListener('click', e => {
   const it = e.target.closest('.item'); if (!it) return;
@@ -634,6 +840,25 @@ $('#stripBtn').onclick = () => {
 $('#themeSeg').addEventListener('click', e => {
   const b = e.target.closest('button'); if (b) setTheme(b.dataset.theme);
 });
+
+$('#tabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab'); if (!tab) return;
+  const t = TABS[+tab.dataset.i]; if (!t) return;
+  if (e.target.closest('.tab-x')) closeTab(t); else switchTab(t);
+});
+$('#tabs').addEventListener('auxclick', e => {
+  const tab = e.target.closest('.tab');
+  if (tab && e.button === 1) { e.preventDefault(); const t = TABS[+tab.dataset.i]; if (t) closeTab(t); }
+});
+$('#newTabBtn').onclick = () => toLibrary();
+
+$('#notesBtn').onclick = () => toggleNotes();
+$('#notesClose').onclick = () => toggleNotes(false);
+$('#noteText').addEventListener('input', noteEdited);
+$('#noteText').addEventListener('blur', flushNote);
+$('#notesPrev').onclick = () => jumpNote(-1);
+$('#notesNext').onclick = () => jumpNote(1);
+$('#notesExport').onclick = exportNotes;
 
 $('#searchBtn').onclick = () => openSearch();
 $('#searchClose').onclick = () => { $('#searchPanel').hidden = true; };
@@ -711,6 +936,7 @@ addEventListener('keydown', e => {
     if (!$('#searchPanel').hidden || !$('#starPanel').hidden) return closePanels();
     if (typing) return e.target.blur();
     if (document.body.dataset.screen === 'viewer') return toLibrary();
+    if (cur) { showScreen('viewer'); renderTabs(); }
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
@@ -719,6 +945,18 @@ addEventListener('keydown', e => {
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); loadLibrary(); toast('Rescanned'); return; }
+
+  // Tab commands work even while the notes box has focus.
+  if (e.metaKey && !e.altKey) {
+    if (e.key === 't') { e.preventDefault(); toLibrary(); return; }
+    if (e.key === 'w') { e.preventDefault(); if (cur) closeTab(cur); return; }
+    if (e.key >= '1' && e.key <= '9') {
+      const t = TABS[+e.key - 1];
+      if (t) { e.preventDefault(); switchTab(t); }
+      return;
+    }
+  }
+  if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return; }
   if (typing) return;
 
   if (document.body.dataset.screen === 'library') {
@@ -751,6 +989,7 @@ addEventListener('keydown', e => {
     }
     case 'f': case 'F': send('toggleFullScreen'); break;
     case 't': case 'T': $('#stripBtn').click(); break;
+    case 'n': case 'N': toggleNotes(); break;
     case 's': e.shiftKey ? openStars() : toggleStar(); break;
     case 'S': openStars(); break;
     case '[': jumpStar(-1); break;
@@ -792,6 +1031,8 @@ $('#grid').addEventListener('contextmenu', e => {
 window.sv = {
   fullScreen(on) { S.fs = on; document.body.classList.toggle('fs', on); },
   rootChanged() { S.subject = 'all'; loadLibrary(); },
+  newTab() { toLibrary(); },
+  closeTab() { if (cur) closeTab(cur); },
   toast(msg) { toast(msg); }
 };
 

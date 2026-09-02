@@ -337,3 +337,62 @@ body.fs .vbar{ padding-top:7px; }
 ::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.16); border-radius:6px;
   border:3px solid transparent; background-clip:content-box; }
 ::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.28); background-clip:content-box; }
+
+/* ═══════════════════════  TABS  ═══════════════════════ */
+.tabbar{
+  flex:none; display:flex; align-items:stretch; gap:4px;
+  height:33px; padding:0 8px; background:var(--bg);
+  border-bottom:1px solid var(--sep);
+}
+.tabs{ display:flex; align-items:stretch; gap:3px; flex:1; min-width:0; overflow:hidden; }
+.tab{
+  display:flex; align-items:center; gap:7px; min-width:0; flex:1 1 0; max-width:210px;
+  padding:0 6px 0 10px; margin:4px 0 5px; border-radius:7px;
+  color:var(--fg3); background:transparent; transition:background .12s, color .12s;
+}
+.tab:hover{ background:rgba(255,255,255,.06); color:var(--fg2); }
+.tab.on{ background:rgba(255,255,255,.13); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.3); }
+.tab-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:12px; text-align:left; }
+.tab.on .tab-name{ font-weight:500; }
+.tab-dot{ width:5px; height:5px; border-radius:50%; background:var(--accent); flex:none; }
+.tab-x{ width:16px; height:16px; flex:none; display:grid; place-items:center;
+  border-radius:4px; font-size:10px; opacity:0; transition:opacity .12s, background .12s; }
+.tab:hover .tab-x, .tab.on .tab-x{ opacity:.65; }
+.tab-x:hover{ background:rgba(255,255,255,.18); opacity:1; }
+.tab-new{
+  width:26px; flex:none; margin:4px 0 5px; border-radius:7px;
+  display:grid; place-items:center; color:var(--fg3); transition:background .12s, color .12s;
+}
+.tab-new:hover{ background:rgba(255,255,255,.09); color:var(--fg); }
+
+/* ═══════════════════════  NOTES  ═══════════════════════ */
+.notes{
+  width:340px; flex:none; display:flex; flex-direction:column;
+  background:var(--sidebar); border-left:1px solid var(--sep);
+}
+.notes-head{
+  display:flex; align-items:center; gap:4px; padding:9px 8px 8px 14px;
+  border-bottom:1px solid var(--sep);
+}
+.notes-title{ font-size:12px; font-weight:600; }
+.notes-page{ flex:1; font-size:11px; color:var(--fg3); font-variant-numeric:tabular-nums; }
+#noteText{
+  flex:1; resize:none; border:0; outline:0; background:transparent;
+  padding:14px; color:var(--fg); user-select:text; cursor:text;
+  font:13px/1.6 -apple-system,"SF Pro Text",sans-serif;
+}
+#noteText::placeholder{ color:var(--fg3); }
+.notes-foot{
+  display:flex; justify-content:space-between; padding:7px 14px 9px;
+  border-top:1px solid var(--sep); font-size:10.5px; color:var(--fg3);
+  font-variant-numeric:tabular-nums; min-height:28px;
+}
+
+/* note markers alongside the star markers */
+.fs-note{ position:absolute; right:4px; top:3px; width:6px; height:6px;
+  border-radius:50%; background:var(--accent); box-shadow:0 0 0 1.5px rgba(0,0,0,.5); }
+#scrubMarks i.note{ top:8px; height:5px; background:var(--accent); }
+.card-note{ position:absolute; right:8px; bottom:9px; height:17px; padding:0 6px;
+  display:flex; align-items:center; gap:3px; border-radius:5px; font-size:10px;
+  font-weight:600; background:rgba(10,132,255,.9); color:#fff; }

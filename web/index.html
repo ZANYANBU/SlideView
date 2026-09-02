@@ -85,6 +85,9 @@
       <button id="starBtn" class="icon-btn" title="Star this slide (S)">
         <svg viewBox="0 0 16 16" width="15" height="15"><path class="star-path" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" d="M8 2.2l1.76 3.57 3.94.57-2.85 2.78.67 3.92L8 11.2l-3.52 1.85.67-3.92L2.3 6.34l3.94-.57z"/></svg>
       </button>
+      <button id="notesBtn" class="icon-btn" title="Notes for this slide (N)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M4 2.6h8v10.8H4zM6 5.6h4M6 8h4M6 10.4h2.5"/></svg>
+      </button>
       <button id="searchBtn" class="icon-btn" title="Search text (⌘F)">
         <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm3.4-1.1 3.1 3.1"/></svg>
       </button>
@@ -102,6 +105,13 @@
     </div>
   </header>
 
+  <div id="tabbar" class="tabbar" hidden>
+    <div id="tabs" class="tabs"></div>
+    <button id="newTabBtn" class="tab-new" title="Open another deck (⌘T)">
+      <svg viewBox="0 0 16 16" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M8 3.8v8.4M3.8 8h8.4"/></svg>
+    </button>
+  </div>
+
   <div class="vbody">
     <aside id="filmstrip" class="filmstrip" hidden></aside>
     <div id="stage" class="stage">
@@ -115,6 +125,20 @@
         <div class="loading-sub" id="loadingSub"></div>
       </div>
     </div>
+
+    <aside id="notes" class="notes" hidden>
+      <div class="notes-head">
+        <span class="notes-title">Notes</span>
+        <span id="notesPage" class="notes-page"></span>
+        <button id="notesPrev" class="icon-btn small" title="Previous slide with a note">↑</button>
+        <button id="notesNext" class="icon-btn small" title="Next slide with a note">↓</button>
+        <button id="notesExport" class="icon-btn small" title="Copy every note in this deck as Markdown">⧉</button>
+        <button id="notesClose" class="icon-btn small" title="Close (N)">✕</button>
+      </div>
+      <textarea id="noteText" spellcheck="false"
+        placeholder="Notes for this slide…&#10;&#10;Saved automatically, per slide."></textarea>
+      <div class="notes-foot"><span id="noteStatus"></span><span id="noteCount"></span></div>
+    </aside>
   </div>
 
   <footer class="vfoot">
@@ -164,6 +188,14 @@
         </dl>
       </div>
       <div>
+        <h3>Tabs</h3>
+        <dl>
+          <dt><kbd>⌘T</kbd></dt><dd>Open another deck</dd>
+          <dt><kbd>⌘W</kbd></dt><dd>Close tab</dd>
+          <dt><kbd>⌘1</kbd>…<kbd>⌘9</kbd></dt><dd>Switch to tab</dd>
+          <dt><kbd>⌃⇥</kbd></dt><dd>Next tab</dd>
+          <dt><kbd>⌘↩</kbd></dt><dd>Open in background tab</dd>
+        </dl>
         <h3>View</h3>
         <dl>
           <dt><kbd>D</kbd></dt><dd>Cycle appearance</dd>
@@ -181,6 +213,7 @@
           <dt><kbd>[</kbd><kbd>]</kbd></dt><dd>Prev / next starred</dd>
           <dt><kbd>⇧S</kbd></dt><dd>Starred list</dd>
           <dt><kbd>⌘F</kbd><kbd>/</kbd></dt><dd>Search text</dd>
+          <dt><kbd>N</kbd></dt><dd>Notes for this slide</dd>
           <dt><kbd>?</kbd></dt><dd>This panel</dd>
           <dt><kbd>right-click</kbd></dt><dd>Lens · Gemini · Chrome</dd>
         </dl>

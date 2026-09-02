@@ -37,6 +37,7 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
                 "size": d.size, "modified": d.modified,
                 "state": lib.state(d).rawValue,
                 "pages": ready ? lib.pageCount(d) : 0,
+                "notes": lib.noteCount(d.id),
                 "path": d.url.path
             ])
         }
@@ -71,11 +72,22 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         }
         return .file(p, type: "application/pdf")
 
+    case "/api/notes":
+        guard let id = req.query["id"], lib.doc(id) != nil else { return .json([:], status: 404) }
+        if req.method == "POST" {
+            guard let pageStr = req.query["page"], let page = Int(pageStr) else {
+                return .json(["ok": false], status: 400)
+            }
+            lib.setNote(id, page: page, text: req.bodyText)
+            return .json(["ok": true, "count": lib.noteCount(id)])
+        }
+        return .json(lib.notes(id))
+
     case "/api/thumb":
         guard let id = req.query["id"], let d = lib.doc(id) else { return .text("no such document", status: 404) }
         guard let png = lib.thumbnail(d) else { return .text("no thumb", status: 404) }
         return HTTPResponse(status: 200,
-                            headers: ["Content-Type": "image/png", "Cache-Control": "max-age=86400"],
+                            headers: ["Content-Type": "image/png", "Cache-Control": "no-store"],
                             body: png)
 
     default:
@@ -84,9 +96,7 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         guard !rel.contains(".."), !rel.isEmpty else { return .text("not found", status: 404) }
         let url = webRoot.appendingPathComponent(rel)
         guard FileManager.default.fileExists(atPath: url.path) else { return .text("not found", status: 404) }
-        var res = HTTPResponse.file(url, type: mimeType(url.pathExtension.lowercased()))
-        res.headers["Cache-Control"] = "max-age=3600"
-        return res
+        return HTTPResponse.file(url, type: mimeType(url.pathExtension.lowercased()))
     }
 }
 
@@ -135,7 +145,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         buildMenu()
         NSApp.activate(ignoringOtherApps: true)
-        web.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
+
+        // The server lives on a fixed port, so WKWebView would happily keep
+        // serving a previous build's app.js from its HTTP cache. Drop the
+        // response caches on every launch — but NOT localStorage, which holds
+        // reading position, starred slides and appearance.
+        let caches: Set<String> = [WKWebsiteDataTypeDiskCache,
+                                   WKWebsiteDataTypeMemoryCache,
+                                   WKWebsiteDataTypeOfflineWebApplicationCache]
+        let url = URL(string: "http://127.0.0.1:\(port)/")!
+        WKWebsiteDataStore.default().removeData(ofTypes: caches, modifiedSince: .distantPast) { [weak self] in
+            var req = URLRequest(url: url)
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            self?.web.load(req)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
@@ -163,6 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if let id = body["id"] as? String, let page = body["page"] as? Int {
                 let x = (body["x"] as? Double) ?? 0, y = (body["y"] as? Double) ?? 0
                 showSlideMenu(id: id, page: page, at: NSPoint(x: x, y: web.bounds.height - y))
+            }
+        case "copyText":
+            if let t = body["text"] as? String, !t.isEmpty {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(t, forType: .string)
             }
         case "chooseRoot":
             chooseRoot()
@@ -340,6 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         fs.keyEquivalentModifierMask = [.command, .control]
         view.addItem(fs)
         let reload = NSMenuItem(title: "Reload", action: #selector(menuReload), keyEquivalent: "r")
+        reload.keyEquivalentModifierMask = [.command, .option]   // ⌘R is "rescan library"
         reload.target = self
         view.addItem(reload)
         viewItem.submenu = view
@@ -347,8 +376,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
         let winItem = NSMenuItem()
         let win = NSMenu(title: "Window")
+        // ⌘T / ⌘W belong to the tab strip; the window itself moves to ⇧⌘W.
+        let newTab = NSMenuItem(title: "New Tab", action: #selector(menuNewTab), keyEquivalent: "t")
+        newTab.target = self
+        win.addItem(newTab)
+        let closeTab = NSMenuItem(title: "Close Tab", action: #selector(menuCloseTab), keyEquivalent: "w")
+        closeTab.target = self
+        win.addItem(closeTab)
+        win.addItem(.separator())
         win.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        win.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let closeWin = NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        closeWin.keyEquivalentModifierMask = [.command, .shift]
+        win.addItem(closeWin)
         winItem.submenu = win
         main.addItem(winItem)
         NSApp.windowsMenu = win
@@ -358,6 +397,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     @objc private func menuChooseRoot() { chooseRoot() }
     @objc private func menuReload() { web.reload() }
+    @objc private func menuNewTab() { web.evaluateJavaScript("window.sv && window.sv.newTab && window.sv.newTab()") }
+    @objc private func menuCloseTab() { web.evaluateJavaScript("window.sv && window.sv.closeTab && window.sv.closeTab()") }
 }
 
 let app = NSApplication.shared
