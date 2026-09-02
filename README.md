@@ -30,15 +30,30 @@ near-black / near-white range instead of harsh `#000` / `#fff`.
 
 ## Tabs
 
-Decks open in tabs, Safari-style. The strip sits below the toolbar (the top 28px
-of the window belongs to the AppKit titlebar, which swallows clicks) and stays
-hidden while only one deck is open.
+Decks open in tabs across the top of the window, Chrome-style, always visible —
+the library acts as the new-tab page.
 
 `⌘T` open another deck · `⌘W` close tab · `⌘1`…`⌘9` switch · `⌃⇥` next tab
 `⌘`-click or middle-click a deck in the library to open it in a background tab.
 
+Two macOS details worth knowing if you touch this code:
+
+- Tabs sit in the titlebar strip. Clicks *do* reach the web view there, but the
+  window then loses its drag area — so the shell puts a real `NSView` with
+  `mouseDownCanMoveWindow` in the empty space right of the tabs, and the page
+  reports where that space begins (`dragZone`).
+- In full screen the strip folds into the toolbar row instead of keeping a row
+  of its own, which would cost ~42px of slide for nothing.
+
 Each tab keeps its own page, zoom, stars, search index and notes. Render caches
 are keyed per document, so switching back to a tab is instant.
+
+## Zen mode
+
+`H` hides the tab strip, toolbar, thumbnail rail, notes and footer — the slide
+fills the screen with no chrome at all. Nudge the pointer to the top edge to
+peek at the toolbar; `H` or `Esc` brings everything back. Leaving full screen
+drops zen automatically, so you can never get stranded without controls.
 
 ## Notes
 
@@ -62,7 +77,7 @@ Notes are keyed by page only — editing and re-converting a deck keeps them.
 ## Keyboard
 
 `→ ␣ J` next · `← ⇧␣ K` prev · `Home/End` first/last · digits jump to a slide
-`D` appearance · `F` full screen · `T` thumbnail rail · `+ −` zoom · `0` fit · `W` fit width
+`D` appearance · `F` full screen · `H` zen · `T` thumbnail rail · `+ −` zoom · `0` fit · `W` fit width
 `S` star slide · `[ ]` prev/next starred · `⇧S` starred list · `N` notes
 `⌘F` or `/` search · `⌘T` `⌘W` `⌘1`-`⌘9` tabs · `?` help
 `Esc` back to library · `⌘R` rescan

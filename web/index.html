@@ -8,7 +8,16 @@
 </head>
 <body data-screen="library">
 
-<div class="titlebar-drag"></div>
+<div id="tabbar" class="tabbar">
+  <div class="tab-lights"></div>
+  <div id="tabs" class="tabs"></div>
+  <button id="newTabBtn" class="tab-new" title="Open another deck (⌘T)">
+    <svg viewBox="0 0 16 16" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M8 3.8v8.4M3.8 8h8.4"/></svg>
+  </button>
+  <div class="tab-drag"></div>
+</div>
+
+<div id="screens">
 
 <!-- ─────────────────────────  LIBRARY  ───────────────────────── -->
 <div id="library" class="screen">
@@ -99,18 +108,14 @@
         <button data-theme="light"  title="Original colours (D)">Light</button>
       </div>
 
+      <button id="zenBtn" class="icon-btn" title="Hide everything but the slide (H)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M2.5 6V3.5H6M10 3.5h3.5V6M6 12.5H2.5V10M13.5 10v2.5H10"/><path fill="currentColor" d="M7 7h2v2H7z"/></svg>
+      </button>
       <button id="fsBtn" class="icon-btn" title="Full screen (F)">
         <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
       </button>
     </div>
   </header>
-
-  <div id="tabbar" class="tabbar" hidden>
-    <div id="tabs" class="tabs"></div>
-    <button id="newTabBtn" class="tab-new" title="Open another deck (⌘T)">
-      <svg viewBox="0 0 16 16" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M8 3.8v8.4M3.8 8h8.4"/></svg>
-    </button>
-  </div>
 
   <div class="vbody">
     <aside id="filmstrip" class="filmstrip" hidden></aside>
@@ -169,6 +174,8 @@
 
 </div>
 
+</div><!-- /#screens -->
+
 <div id="toast" class="toast" hidden></div>
 
 <!-- ─────────────────────────  HELP  ───────────────────────── -->
@@ -202,6 +209,7 @@
           <dt><kbd>F</kbd></dt><dd>Full screen</dd>
           <dt><kbd>T</kbd></dt><dd>Thumbnail rail</dd>
           <dt><kbd>+</kbd><kbd>−</kbd></dt><dd>Zoom</dd>
+          <dt><kbd>H</kbd></dt><dd>Hide all but the slide</dd>
           <dt><kbd>0</kbd></dt><dd>Fit to window</dd>
           <dt><kbd>W</kbd></dt><dd>Fit to width</dd>
         </dl>
