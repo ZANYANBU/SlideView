@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SlideView</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-screen="library">
+
+<div class="titlebar-drag"></div>
+
+<!-- ─────────────────────────  LIBRARY  ───────────────────────── -->
+<div id="library" class="screen">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="lib-head">
+        <span class="lib-label">Library</span>
+        <button id="addRootBtn" class="add-btn" title="Add folder to library (⌘O)">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.6v8.8M3.6 8h8.8"/></svg>
+        </button>
+      </div>
+      <div id="rootList" class="root-list"></div>
+    </div>
+    <nav id="subjectNav" class="subject-nav"></nav>
+    <div class="sidebar-foot">
+      <div class="kbd-row"><kbd>↵</kbd><span>Open</span></div>
+      <div class="kbd-row"><kbd>⌘R</kbd><span>Rescan</span></div>
+    </div>
+  </aside>
+
+  <main class="lib-main">
+    <header class="lib-header">
+      <div>
+        <h1 id="libTitle">All material</h1>
+        <p id="libSub" class="sub">Scanning…</p>
+      </div>
+      <div class="lib-search">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm3.4-1.1 3.1 3.1"/></svg>
+        <input id="libFilter" type="search" placeholder="Filter" spellcheck="false">
+      </div>
+    </header>
+    <div id="grid" class="grid"></div>
+    <div id="libEmpty" class="empty" hidden>
+      <div class="empty-art">◻︎</div>
+      <h2>No slides here yet</h2>
+      <p>Point SlideView at a folder containing <code>.pptx</code>, <code>.ppt</code> or <code>.pdf</code> files.</p>
+      <button class="btn primary" id="emptyChoose">Add Folder…</button>
+    </div>
+  </main>
+</div>
+
+<!-- ─────────────────────────  VIEWER  ───────────────────────── -->
+<div id="viewer" class="screen" hidden>
+  <header id="vbar" class="vbar">
+    <div class="vbar-left">
+      <button id="backBtn" class="icon-btn" title="Library (Esc)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9.5 3.5 5 8l4.5 4.5"/></svg>
+      </button>
+      <button id="stripBtn" class="icon-btn" title="Slide thumbnails (T)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><rect x="2" y="3" width="4" height="4" rx="1" fill="currentColor"/><rect x="2" y="9" width="4" height="4" rx="1" fill="currentColor"/><rect x="8" y="3" width="6" height="10" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      </button>
+      <div class="vbar-title">
+        <span id="docTitle">—</span>
+        <span id="docSub" class="vbar-sub"></span>
+      </div>
+    </div>
+
+    <div class="vbar-center">
+      <div class="pager">
+        <button id="prevBtn" class="pager-btn" title="Previous (←)">
+          <svg viewBox="0 0 16 16" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9.5 3.5 5 8l4.5 4.5"/></svg>
+        </button>
+        <div class="pager-num">
+          <input id="pageInput" type="text" inputmode="numeric" value="1" aria-label="Page">
+          <span class="pager-total">/ <b id="pageTotal">–</b></span>
+        </div>
+        <button id="nextBtn" class="pager-btn" title="Next (→)">
+          <svg viewBox="0 0 16 16" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M6.5 3.5 11 8l-4.5 4.5"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="vbar-right">
+      <button id="starBtn" class="icon-btn" title="Star this slide (S)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path class="star-path" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" d="M8 2.2l1.76 3.57 3.94.57-2.85 2.78.67 3.92L8 11.2l-3.52 1.85.67-3.92L2.3 6.34l3.94-.57z"/></svg>
+      </button>
+      <button id="searchBtn" class="icon-btn" title="Search text (⌘F)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm3.4-1.1 3.1 3.1"/></svg>
+      </button>
+
+      <div class="seg" id="themeSeg" role="radiogroup" aria-label="Appearance">
+        <button data-theme="smart"  title="Smart Invert — dark UI, images kept true (D)">Smart</button>
+        <button data-theme="invert" title="Invert everything (D)">Invert</button>
+        <button data-theme="dim"    title="Dim only (D)">Dim</button>
+        <button data-theme="light"  title="Original colours (D)">Light</button>
+      </div>
+
+      <button id="fsBtn" class="icon-btn" title="Full screen (F)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="vbody">
+    <aside id="filmstrip" class="filmstrip" hidden></aside>
+    <div id="stage" class="stage">
+      <div id="slideWrap" class="slide-wrap">
+        <canvas id="slide"></canvas>
+        <div id="slideBadge" class="slide-badge" hidden></div>
+      </div>
+      <div id="loading" class="loading" hidden>
+        <div class="spinner"></div>
+        <div id="loadingText" class="loading-text">Preparing…</div>
+        <div class="loading-sub" id="loadingSub"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="vfoot">
+    <div id="scrub" class="scrub"><div id="scrubFill" class="scrub-fill"></div><div id="scrubMarks"></div></div>
+    <div class="vfoot-meta"><span id="footLeft"></span><span id="footRight"></span></div>
+  </footer>
+
+  <!-- search panel -->
+  <div id="searchPanel" class="panel" hidden>
+    <div class="panel-head">
+      <svg viewBox="0 0 16 16" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm3.4-1.1 3.1 3.1"/></svg>
+      <input id="searchInput" type="search" placeholder="Search this deck" spellcheck="false">
+      <span id="searchCount" class="panel-count"></span>
+      <button id="searchClose" class="icon-btn small">✕</button>
+    </div>
+    <div id="searchResults" class="panel-list"></div>
+  </div>
+
+  <!-- starred panel -->
+  <div id="starPanel" class="panel" hidden>
+    <div class="panel-head">
+      <span class="panel-title">Starred slides</span>
+      <span id="starCount" class="panel-count"></span>
+      <button id="starClose" class="icon-btn small">✕</button>
+    </div>
+    <div id="starList" class="panel-list"></div>
+  </div>
+
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- ─────────────────────────  HELP  ───────────────────────── -->
+<div id="help" class="help-overlay" hidden>
+  <div class="help-card">
+    <h2>Keyboard</h2>
+    <div class="help-cols">
+      <div>
+        <h3>Navigate</h3>
+        <dl>
+          <dt><kbd>→</kbd><kbd>Space</kbd></dt><dd>Next slide</dd>
+          <dt><kbd>←</kbd><kbd>⇧Space</kbd></dt><dd>Previous slide</dd>
+          <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Prev / next</dd>
+          <dt><kbd>Home</kbd><kbd>End</kbd></dt><dd>First / last</dd>
+          <dt><kbd>1</kbd>…<kbd>9</kbd></dt><dd>Jump to page number</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Back to library</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>View</h3>
+        <dl>
+          <dt><kbd>D</kbd></dt><dd>Cycle appearance</dd>
+          <dt><kbd>F</kbd></dt><dd>Full screen</dd>
+          <dt><kbd>T</kbd></dt><dd>Thumbnail rail</dd>
+          <dt><kbd>+</kbd><kbd>−</kbd></dt><dd>Zoom</dd>
+          <dt><kbd>0</kbd></dt><dd>Fit to window</dd>
+          <dt><kbd>W</kbd></dt><dd>Fit to width</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>Study</h3>
+        <dl>
+          <dt><kbd>S</kbd></dt><dd>Star this slide</dd>
+          <dt><kbd>[</kbd><kbd>]</kbd></dt><dd>Prev / next starred</dd>
+          <dt><kbd>⇧S</kbd></dt><dd>Starred list</dd>
+          <dt><kbd>⌘F</kbd><kbd>/</kbd></dt><dd>Search text</dd>
+          <dt><kbd>?</kbd></dt><dd>This panel</dd>
+          <dt><kbd>right-click</kbd></dt><dd>Lens · Gemini · Chrome</dd>
+        </dl>
+      </div>
+    </div>
+    <button class="btn" id="helpClose">Done</button>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

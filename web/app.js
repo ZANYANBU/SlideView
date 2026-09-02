@@ -1,0 +1,799 @@
+import * as pdfjsLib from '/vendor/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.mjs';
+
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const native = window.webkit?.messageHandlers?.app;
+const send = (cmd, extra = {}) => { try { native?.postMessage({ cmd, ...extra }); } catch {} };
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+const S = {
+  lib: null, subject: 'all', filter: '',
+  doc: null, pdf: null, page: 1, total: 0,
+  theme: store.get('sv:theme', 'smart'),
+  zoom: 1, fitMode: 'fit',
+  strip: store.get('sv:strip', false),
+  stars: new Set(),
+  text: null, textDone: 0,
+  token: 0, baseW: 0, aspect: 16 / 9,
+  fs: false
+};
+
+/* ════════════════════════════════════════════════════════════════
+   Appearance engine
+   ──────────────────────────────────────────────────────────────
+   `smart`  invert text + vector art, leave photographs alone
+   `invert` invert the whole page
+   `dim`    keep colours, lower the light output
+   `light`  untouched
+   Inversion = per-channel invert followed by a 180° hue rotation,
+   so a red heading stays red instead of turning cyan. The result is
+   then compressed into [LO,HI] so paper-white lands on a soft near
+   black and body text on a soft near white — easier on the eyes for
+   a long revision session than pure #000/#fff.
+   ════════════════════════════════════════════════════════════════ */
+const LO = 16, HI = 233;
+const IMG_DIM = 0.92;      // gentle knock-down on preserved photos
+const DIM_K   = 0.55;
+
+let lutTheme = null, LUT = null;
+function grayLUT(theme) {
+  if (lutTheme === theme) return LUT;
+  const t = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) {
+    if (theme === 'dim') t[v] = v * DIM_K;
+    else t[v] = LO + (255 - v) * (HI - LO) / 255;
+  }
+  LUT = t; lutTheme = theme;
+  return t;
+}
+
+function transformPixels(img, mask, theme) {
+  if (theme === 'light') return;
+  const d = img.data, n = d.length, lut = grayLUT(theme);
+  const dim = theme === 'dim';
+
+  for (let i = 0, p = 0; i < n; i += 4, p++) {
+    if (mask && mask[p]) {                       // preserved photograph
+      if (!dim) { d[i] *= IMG_DIM; d[i + 1] *= IMG_DIM; d[i + 2] *= IMG_DIM; }
+      else      { d[i] *= DIM_K;   d[i + 1] *= DIM_K;   d[i + 2] *= DIM_K;   }
+      continue;
+    }
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if (r === g && g === b) {                    // grey — the common case, table lookup
+      const v = lut[r]; d[i] = v; d[i + 1] = v; d[i + 2] = v;
+      continue;
+    }
+    if (dim) { d[i] = r * DIM_K; d[i + 1] = g * DIM_K; d[i + 2] = b * DIM_K; continue; }
+
+    const R = 255 - r, G = 255 - g, B = 255 - b; // invert …
+    let nr = -0.574 * R + 1.430 * G + 0.144 * B; // … then rotate hue 180°
+    let ng =  0.426 * R + 0.430 * G + 0.144 * B;
+    let nb =  0.426 * R + 1.430 * G - 0.856 * B;
+    const k = (HI - LO) / 255;
+    d[i]     = LO + clamp(nr, 0, 255) * k;
+    d[i + 1] = LO + clamp(ng, 0, 255) * k;
+    d[i + 2] = LO + clamp(nb, 0, 255) * k;
+  }
+}
+
+/* Walk the page's operator list, tracking the CTM, to find where raster
+   images land on the canvas. Those regions are exempt from inversion. */
+const OPS = pdfjsLib.OPS;
+function mul(m, n) {
+  return [
+    m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1],
+    m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+    m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5]
+  ];
+}
+async function imageRects(page, viewport) {
+  let ops;
+  try { ops = await page.getOperatorList(); } catch { return []; }
+  const rects = [];
+  const stack = [];
+  let ctm = viewport.transform.slice();
+
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], a = ops.argsArray[i];
+    switch (fn) {
+      case OPS.save: stack.push(ctm.slice()); break;
+      case OPS.restore: ctm = stack.pop() || ctm; break;
+      case OPS.transform: ctm = mul(ctm, a); break;
+      case OPS.paintFormXObjectBegin: stack.push(ctm.slice()); if (a?.[0]) ctm = mul(ctm, a[0]); break;
+      case OPS.paintFormXObjectEnd: ctm = stack.pop() || ctm; break;
+      case OPS.paintImageXObject:
+      case OPS.paintImageXObjectRepeat:
+      case OPS.paintInlineImageXObject:
+      case OPS.paintJpegXObject: {
+        const xs = [], ys = [];
+        for (const [ux, uy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+          xs.push(ctm[0] * ux + ctm[2] * uy + ctm[4]);
+          ys.push(ctm[1] * ux + ctm[3] * uy + ctm[5]);
+        }
+        rects.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+        break;
+      }
+      // paintImageMaskXObject is a stencil filled with the current colour —
+      // that is really text/vector art, so it stays invertible.
+    }
+  }
+  return rects;
+}
+
+/* Average luminance of a region. Samples a fixed GRID rather than a fixed
+   pixel stride, so a thumbnail and a full-size render of the same slide
+   always reach the same verdict. */
+const LUMA_GRID = 48;
+function regionLuma(data, W, x0, y0, x1, y1) {
+  const w = x1 - x0, h = y1 - y0;
+  if (w <= 0 || h <= 0) return 0;
+  const cols = Math.min(LUMA_GRID, w), rows = Math.min(LUMA_GRID, h);
+  let sum = 0, n = 0;
+  for (let j = 0; j < rows; j++) {
+    const y = y0 + Math.floor((j + 0.5) * h / rows);
+    for (let i = 0; i < cols; i++) {
+      const x = x0 + Math.floor((i + 0.5) * w / cols);
+      const idx = (y * W + x) * 4;
+      sum += 0.2126 * data[idx] + 0.7152 * data[idx + 1] + 0.0722 * data[idx + 2];
+      n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
+function buildMask(img, rects, W, H) {
+  if (!rects.length) return null;
+  const area = W * H;
+  const mask = new Uint8Array(W * H);
+  let any = false;
+
+  for (const r of rects) {
+    const x0 = clamp(Math.floor(r[0]) + 1, 0, W), x1 = clamp(Math.ceil(r[2]) - 1, 0, W);
+    const y0 = clamp(Math.floor(r[1]) + 1, 0, H), y1 = clamp(Math.ceil(r[3]) - 1, 0, H);
+    if (x1 - x0 < 6 || y1 - y0 < 6) continue;
+
+    // A near-white image that covers most of the slide is a background
+    // plate, not a photo — inverting it is the whole point of dark mode.
+    if ((x1 - x0) * (y1 - y0) > area * 0.45 &&
+        regionLuma(img.data, W, x0, y0, x1, y1) > 150) continue;
+
+    any = true;
+    for (let y = y0; y < y1; y++) {
+      mask.fill(1, y * W + x0, y * W + x1);
+    }
+  }
+  return any ? mask : null;
+}
+
+/* ════════════════════════  page rendering  ════════════════════════ */
+const cacheMain = new Map(), cacheThumb = new Map();
+function cachePut(cache, key, bmp, limit) {
+  cache.set(key, bmp);
+  while (cache.size > limit) {
+    const k = cache.keys().next().value;
+    try { cache.get(k).close?.(); } catch {}
+    cache.delete(k);
+  }
+}
+function dropCaches() {
+  for (const c of [cacheMain, cacheThumb]) {
+    for (const b of c.values()) { try { b.close?.(); } catch {} }
+    c.clear();
+  }
+}
+
+const inflight = new Map();
+/* pdf.js does not support two concurrent render()/getOperatorList() calls on
+   the same page proxy, and page.cleanup() from one will pull data out from
+   under the other. The main view and the filmstrip both want page N, so every
+   job for a page is chained behind the previous one. */
+const pageLock = new Map();
+function withPage(n, fn) {
+  const prev = pageLock.get(n) || Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  pageLock.set(n, next.catch(() => {}));
+  return next;
+}
+
+function renderPage(n, width, thumb = false) {
+  const key = `${n}|${Math.round(width)}|${S.theme}`;
+  const cache = thumb ? cacheThumb : cacheMain;
+  const hit = cache.get(key);
+  if (hit) return Promise.resolve(hit);
+  if (inflight.has(key)) return inflight.get(key);
+
+  const job = withPage(n, async () => {
+    const page = await S.pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const scale = width / base.width;
+    const vp = page.getViewport({ scale });
+    const W = Math.max(1, Math.round(vp.width)), H = Math.max(1, Math.round(vp.height));
+
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d', { willReadFrequently: true, alpha: false });
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+    await page.render({ canvasContext: ctx, viewport: vp, background: '#ffffff' }).promise;
+
+    if (S.theme !== 'light') {
+      const rects = S.theme === 'smart' ? await imageRects(page, vp) : [];
+      const img = ctx.getImageData(0, 0, W, H);
+      const mask = S.theme === 'smart' ? buildMask(img, rects, W, H) : null;
+      transformPixels(img, mask, S.theme);
+      ctx.putImageData(img, 0, 0);
+    }
+    const bmp = await createImageBitmap(cv);
+    cachePut(cache, key, bmp, thumb ? 80 : 12);
+    return bmp;
+  }).finally(() => inflight.delete(key));
+
+  inflight.set(key, job);
+  return job;
+}
+
+/* ════════════════════════════  library  ════════════════════════════ */
+const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
+const allDocs = () => (S.lib?.subjects || []).flatMap(s => s.docs);
+const findDoc = id => allDocs().find(d => d.id === id);
+
+let pollTimer = null;
+async function loadLibrary() {
+  const r = await fetch('/api/library');
+  S.lib = await r.json();
+  renderRoots();
+  renderSidebar();
+  renderGrid();
+
+  const pending = allDocs().filter(d => d.state !== 'ready' && d.state !== 'error');
+  pending.slice(0, 24).forEach(d => fetch('/api/convert?id=' + d.id));
+  clearTimeout(pollTimer);
+  if (pending.length) pollTimer = setTimeout(loadLibrary, 1400);
+}
+
+function renderRoots() {
+  const folder = '<svg viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M1.5 4.2c0-.94.76-1.7 1.7-1.7h2.4c.45 0 .88.18 1.2.5l.9.9h5.1c.94 0 1.7.76 1.7 1.7v6c0 .94-.76 1.7-1.7 1.7H3.2c-.94 0-1.7-.76-1.7-1.7z"/></svg>';
+  $('#rootList').innerHTML = (S.lib.roots || []).map(r =>
+    `<div class="src" data-path="${esc(r.path)}" title="${esc(r.path)}">
+       ${folder}<span class="src-name">${esc(r.name)}</span>
+       <button class="src-x" title="Remove from library">✕</button>
+     </div>`).join('');
+}
+
+function renderSidebar() {
+  const nav = $('#subjectNav');
+  const subs = S.lib.subjects;
+  const total = allDocs().length;
+  const item = (key, label, count) =>
+    `<button class="item ${S.subject === key ? 'on' : ''}" data-sub="${key}">
+       <span class="dot"></span><span class="nm">${esc(label)}</span><span class="count">${count}</span>
+     </button>`;
+  nav.innerHTML = item('all', 'All material', total) + '<div class="nav-gap"></div>' +
+    subs.map(s => item(s.name, s.name, s.docs.length)).join('');
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function renderGrid() {
+  const grid = $('#grid');
+  const q = S.filter.trim().toLowerCase();
+  const subs = S.lib.subjects
+    .filter(s => S.subject === 'all' || s.name === S.subject)
+    .map(s => ({ ...s, docs: s.docs.filter(d => !q || d.name.toLowerCase().includes(q)) }))
+    .filter(s => s.docs.length);
+
+  const shown = subs.flatMap(s => s.docs).length;
+  $('#libTitle').textContent = S.subject === 'all' ? 'All material' : S.subject;
+  const nRoots = (S.lib.roots || []).length;
+  const where = nRoots > 1 ? `${nRoots} folders` : S.lib.root.replace(/^\/Users\/[^/]+/, '~');
+  $('#libSub').textContent = shown ? `${shown} deck${shown === 1 ? '' : 's'} · ${where}` : 'Nothing matches';
+  $('#libEmpty').hidden = !!allDocs().length;
+  grid.hidden = !allDocs().length;
+
+  grid.innerHTML = subs.map(s => {
+    const head = (S.subject === 'all' && S.lib.subjects.length > 1)
+      ? `<div class="sec-head">${esc(s.name)}<span class="n">${s.docs.length}</span></div>` : '';
+    return head + s.docs.map(card).join('');
+  }).join('');
+}
+
+function card(d) {
+  const pos = store.get(`sv:pos:${d.id}`, 0);
+  const stars = store.get(`sv:stars:${d.id}`, []).length;
+  const pct = d.pages && pos ? Math.round(pos / d.pages * 100) : 0;
+  const art = d.state === 'ready'
+    ? `<img src="/api/thumb?id=${d.id}" loading="lazy" alt="">`
+    : `<div class="ph">${d.state === 'error'
+        ? '⚠︎<br>Could not convert' : '<div class="spinner"></div>Converting…'}</div>`;
+  return `<button class="card" data-id="${d.id}">
+    <div class="card-art">
+      ${art}
+      <span class="badge">${d.ext}</span>
+      ${stars ? `<span class="badge star">★ ${stars}</span>` : ''}
+      ${pct ? `<div class="card-bar"><i style="width:${pct}%"></i></div>` : ''}
+    </div>
+    <div class="card-name">${esc(d.name)}</div>
+    <div class="card-meta">${d.pages ? d.pages + ' slides · ' : ''}${fmtSize(d.size)}${pct ? ` · ${pct}%` : ''}</div>
+  </button>`;
+}
+
+/* ════════════════════════════  viewer  ════════════════════════════ */
+function showScreen(which) {
+  $('#library').hidden = which !== 'library';
+  $('#viewer').hidden = which !== 'viewer';
+  document.body.dataset.screen = which;
+}
+
+async function openDoc(id) {
+  const d = findDoc(id);
+  if (!d) return;
+  S.doc = d; S.page = 1; S.pdf = null; S.text = null; S.textDone = 0;
+  S.zoom = 1; S.fitMode = 'fit';
+  dropCaches();
+  showScreen('viewer');
+  closePanels();
+  $('#docTitle').textContent = d.name;
+  $('#docSub').textContent = d.subject;
+  $('.vbar').dataset.title = d.name;
+  send('title', { text: d.name });
+  setLoading(true, 'Opening…');
+
+  if (d.state !== 'ready') {
+    setLoading(true, 'Converting with LibreOffice…', 'First open only — the PDF is cached afterwards.');
+    fetch('/api/convert?id=' + id);
+    const ok = await waitReady(id);
+    if (!ok) return;
+  }
+
+  try {
+    S.pdf = await pdfjsLib.getDocument({ url: '/api/pdf?id=' + id, disableRange: true, disableStream: true }).promise;
+  } catch (e) {
+    setLoading(true, 'Could not open this document', String(e?.message || e));
+    return;
+  }
+  S.total = S.pdf.numPages;
+  $('#pageTotal').textContent = S.total;
+  const p1 = await S.pdf.getPage(1);
+  const vp = p1.getViewport({ scale: 1 });
+  S.aspect = vp.width / vp.height;
+
+  S.stars = new Set(store.get(`sv:stars:${id}`, []));
+  S.page = clamp(store.get(`sv:pos:${id}`, 1), 1, S.total);
+  $('#filmstrip').hidden = !S.strip;
+  $('#stripBtn').classList.toggle('on', S.strip);
+  setLoading(false);
+  await show(S.page, false);
+  buildStrip();
+  indexText();
+}
+
+async function waitReady(id) {
+  for (;;) {
+    await new Promise(r => setTimeout(r, 600));
+    const st = await (await fetch('/api/state?id=' + id)).json();
+    if (st.state === 'ready') { const d = findDoc(id); if (d) d.state = 'ready'; return true; }
+    if (st.state === 'error') {
+      setLoading(true, 'Conversion failed', st.message || '');
+      $('#loading .spinner').style.display = 'none';
+      return false;
+    }
+  }
+}
+
+let loadTimer = null;
+function setLoading(on, text, sub) {
+  clearTimeout(loadTimer);
+  const el = $('#loading');
+  if (!on) { el.hidden = true; return; }
+  $('#loadingText').textContent = text || 'Rendering…';
+  $('#loadingSub').textContent = sub || '';
+  $('#loading .spinner').style.display = '';
+  el.hidden = false;
+}
+
+function stageBox() {
+  const st = $('#stage');
+  return { w: Math.max(120, st.clientWidth - 32), h: Math.max(120, st.clientHeight - 32) };
+}
+function targetWidth() {
+  const { w, h } = stageBox();
+  const base = S.fitMode === 'width' ? w : Math.min(w, h * S.aspect);
+  return Math.max(240, base * S.zoom);
+}
+
+async function show(n, animate = true) {
+  if (!S.pdf) return;
+  S.page = clamp(n, 1, S.total);
+  const tok = ++S.token;
+  const cssW = targetWidth();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const devW = Math.min(Math.round(cssW * dpr), 3600);
+
+  updateChrome();
+  loadTimer = setTimeout(() => { if (tok === S.token) setLoading(true, 'Rendering slide ' + S.page + '…'); }, 220);
+
+  let bmp;
+  try { bmp = await renderPage(S.page, devW); }
+  catch (e) { if (tok === S.token) setLoading(true, 'Could not render slide', String(e?.message || e)); return; }
+  if (tok !== S.token) return;
+  clearTimeout(loadTimer);
+  setLoading(false);
+
+  const cv = $('#slide');
+  cv.width = bmp.width; cv.height = bmp.height;
+  cv.style.width = cssW + 'px';
+  cv.getContext('2d', { alpha: false }).drawImage(bmp, 0, 0);
+
+  const wrap = $('#slideWrap');
+  $('#stage').classList.toggle('zoomed', S.zoom > 1.02);
+  if (animate) { wrap.classList.remove('turn'); void wrap.offsetWidth; wrap.classList.add('turn'); }
+
+  store.set(`sv:pos:${S.doc.id}`, S.page);
+  idle(() => prefetch(devW));
+}
+
+function idle(fn) {
+  (window.requestIdleCallback || (f => setTimeout(f, 60)))(fn, { timeout: 800 });
+}
+function prefetch(devW) {
+  for (const n of [S.page + 1, S.page + 2, S.page - 1]) {
+    if (n >= 1 && n <= S.total) renderPage(n, devW).catch(() => {});
+  }
+}
+
+function updateChrome() {
+  $('#pageInput').value = S.page;
+  $('#prevBtn').disabled = S.page <= 1;
+  $('#nextBtn').disabled = S.page >= S.total;
+  const starred = S.stars.has(S.page);
+  $('#starBtn').classList.toggle('starred', starred);
+  $('#slideBadge').hidden = !starred;
+  $('#slideBadge').textContent = '★';
+  $('#scrubFill').style.width = (S.total > 1 ? (S.page - 1) / (S.total - 1) * 100 : 0) + '%';
+  $('#scrubMarks').innerHTML = [...S.stars].map(p =>
+    `<i style="left:${S.total > 1 ? (p - 1) / (S.total - 1) * 100 : 0}%"></i>`).join('');
+  $('#footLeft').textContent = `${S.doc?.subject || ''} — ${S.doc?.name || ''}`;
+  $('#footRight').textContent = `${S.page} of ${S.total}` + (S.stars.size ? `  ·  ★ ${S.stars.size}` : '')
+    + (S.zoom > 1.02 ? `  ·  ${Math.round(S.zoom * 100)}%` : '');
+  $$('#filmstrip .fs-item').forEach(el =>
+    el.classList.toggle('on', +el.dataset.n === S.page));
+  const on = $(`#filmstrip .fs-item[data-n="${S.page}"]`);
+  if (on && S.strip) on.scrollIntoView({ block: 'nearest' });
+}
+
+/* ─────────────  filmstrip  ───────────── */
+let stripObs = null;
+function buildStrip() {
+  const strip = $('#filmstrip');
+  stripObs?.disconnect();
+  strip.innerHTML = '';
+  if (!S.pdf) return;
+  const frag = document.createDocumentFragment();
+  for (let n = 1; n <= S.total; n++) {
+    const b = document.createElement('button');
+    b.className = 'fs-item'; b.dataset.n = n;
+    b.innerHTML = `<div class="fs-ph"></div><span class="fs-num">${n}</span>` +
+      (S.stars.has(n) ? '<span class="fs-star">★</span>' : '');
+    frag.appendChild(b);
+  }
+  strip.appendChild(frag);
+  stripObs = new IntersectionObserver(es => {
+    for (const e of es) if (e.isIntersecting) { stripObs.unobserve(e.target); paintThumb(e.target); }
+  }, { root: strip, rootMargin: '320px' });
+  $$('#filmstrip .fs-item').forEach(el => stripObs.observe(el));
+  updateChrome();
+}
+async function paintThumb(el) {
+  const n = +el.dataset.n;
+  try {
+    const bmp = await renderPage(n, 272, true);
+    const cv = document.createElement('canvas');
+    cv.width = bmp.width; cv.height = bmp.height;
+    cv.getContext('2d', { alpha: false }).drawImage(bmp, 0, 0);
+    el.querySelector('.fs-ph')?.replaceWith(cv);
+  } catch {}
+}
+
+/* ─────────────  text search  ───────────── */
+async function indexText() {
+  const doc = S.doc, pdf = S.pdf;
+  S.text = new Array(S.total).fill('');
+  for (let n = 1; n <= S.total; n++) {
+    if (S.doc !== doc || S.pdf !== pdf) return;
+    try {
+      S.text[n - 1] = await withPage(n, async () => {
+        const p = await pdf.getPage(n);
+        const tc = await p.getTextContent();
+        return tc.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      });
+    } catch {}
+    S.textDone = n;
+    if (n % 12 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+      if (!$('#searchPanel').hidden) runSearch();
+    }
+  }
+  if (!$('#searchPanel').hidden) runSearch();
+}
+
+function runSearch() {
+  const q = $('#searchInput').value.trim();
+  const list = $('#searchResults');
+  if (!S.text) { list.innerHTML = '<div class="panel-empty">Indexing…</div>'; return; }
+  if (q.length < 2) {
+    $('#searchCount').textContent = S.textDone < S.total ? `${S.textDone}/${S.total}` : '';
+    list.innerHTML = '<div class="panel-empty">Type at least two characters</div>';
+    return;
+  }
+  const needle = q.toLowerCase();
+  const out = [];
+  for (let i = 0; i < S.text.length; i++) {
+    const t = S.text[i]; if (!t) continue;
+    const at = t.toLowerCase().indexOf(needle);
+    if (at < 0) continue;
+    const from = Math.max(0, at - 42);
+    const snip = (from ? '…' : '') + t.slice(from, at) +
+      '<mark>' + esc(t.substr(at, q.length)) + '</mark>' + esc(t.slice(at + q.length, at + q.length + 90)) + '…';
+    out.push(`<button class="res" data-n="${i + 1}"><div class="p">Slide ${i + 1}</div><div class="t">${snip}</div></button>`);
+    if (out.length > 120) break;
+  }
+  $('#searchCount').textContent = out.length + (S.textDone < S.total ? ` · ${S.textDone}/${S.total}` : '');
+  list.innerHTML = out.length ? out.join('') : '<div class="panel-empty">No matches</div>';
+}
+
+/* ─────────────  stars  ───────────── */
+function toggleStar() {
+  if (!S.doc) return;
+  S.stars.has(S.page) ? S.stars.delete(S.page) : S.stars.add(S.page);
+  store.set(`sv:stars:${S.doc.id}`, [...S.stars].sort((a, b) => a - b));
+  const el = $(`#filmstrip .fs-item[data-n="${S.page}"]`);
+  if (el) {
+    el.querySelector('.fs-star')?.remove();
+    if (S.stars.has(S.page)) el.insertAdjacentHTML('beforeend', '<span class="fs-star">★</span>');
+  }
+  toast(S.stars.has(S.page) ? `★ Slide ${S.page} starred` : `Slide ${S.page} unstarred`);
+  updateChrome();
+  if (!$('#starPanel').hidden) renderStars();
+}
+function jumpStar(dir) {
+  const arr = [...S.stars].sort((a, b) => a - b);
+  if (!arr.length) return toast('No starred slides yet — press S');
+  const next = dir > 0 ? arr.find(p => p > S.page) ?? arr[0]
+                       : [...arr].reverse().find(p => p < S.page) ?? arr[arr.length - 1];
+  show(next);
+}
+function renderStars() {
+  const arr = [...S.stars].sort((a, b) => a - b);
+  $('#starCount').textContent = arr.length;
+  $('#starList').innerHTML = arr.length
+    ? arr.map(n => `<button class="res" data-n="${n}"><div class="p">Slide ${n}</div>
+        <div class="t">${esc((S.text?.[n - 1] || '').slice(0, 110) || 'No text on this slide')}</div></button>`).join('')
+    : '<div class="panel-empty">Press <b>S</b> on a slide worth coming back to</div>';
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 1500);
+}
+function closePanels() { $('#searchPanel').hidden = true; $('#starPanel').hidden = true; }
+
+/* ════════════════════════════  events  ════════════════════════════ */
+function setTheme(t) {
+  S.theme = t; store.set('sv:theme', t);
+  $$('#themeSeg button').forEach(b => b.classList.toggle('on', b.dataset.theme === t));
+  if (S.pdf) { show(S.page, false); repaintStrip(); }
+}
+function repaintStrip() {
+  $$('#filmstrip .fs-item').forEach(el => {
+    const cv = el.querySelector('canvas');
+    if (cv) { const ph = document.createElement('div'); ph.className = 'fs-ph'; cv.replaceWith(ph); }
+    stripObs?.unobserve(el); stripObs?.observe(el);
+  });
+}
+function setZoom(z) {
+  S.zoom = clamp(z, 0.5, 5);
+  if (S.zoom <= 1.02) { S.zoom = 1; $('#stage').scrollTo(0, 0); }
+  show(S.page, false);
+}
+
+$('#grid').addEventListener('click', e => {
+  const c = e.target.closest('.card'); if (c) openDoc(c.dataset.id);
+});
+$('#subjectNav').addEventListener('click', e => {
+  const it = e.target.closest('.item'); if (!it) return;
+  S.subject = it.dataset.sub; renderSidebar(); renderGrid();
+});
+$('#libFilter').addEventListener('input', e => { S.filter = e.target.value; renderGrid(); });
+$('#addRootBtn').onclick = () => send('chooseRoot');
+$('#emptyChoose').onclick = () => send('chooseRoot');
+$('#rootList').addEventListener('click', e => {
+  const row = e.target.closest('.src'); if (!row) return;
+  if (e.target.closest('.src-x')) send('removeRoot', { path: row.dataset.path });
+});
+
+$('#backBtn').onclick = () => toLibrary();
+$('#prevBtn').onclick = () => show(S.page - 1);
+$('#nextBtn').onclick = () => show(S.page + 1);
+$('#fsBtn').onclick = () => send('toggleFullScreen');
+$('#starBtn').onclick = toggleStar;
+$('#stripBtn').onclick = () => {
+  S.strip = !S.strip; store.set('sv:strip', S.strip);
+  $('#filmstrip').hidden = !S.strip;
+  $('#stripBtn').classList.toggle('on', S.strip);
+  show(S.page, false);
+};
+$('#themeSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (b) setTheme(b.dataset.theme);
+});
+
+$('#searchBtn').onclick = () => openSearch();
+$('#searchClose').onclick = () => { $('#searchPanel').hidden = true; };
+$('#searchInput').addEventListener('input', runSearch);
+$('#searchResults').addEventListener('click', e => {
+  const r = e.target.closest('.res'); if (r) show(+r.dataset.n);
+});
+$('#starClose').onclick = () => { $('#starPanel').hidden = true; };
+$('#starList').addEventListener('click', e => {
+  const r = e.target.closest('.res'); if (r) show(+r.dataset.n);
+});
+$('#helpClose').onclick = () => { $('#help').hidden = true; };
+function openSearch() {
+  closePanels();
+  $('#searchPanel').hidden = false;
+  $('#searchInput').focus(); $('#searchInput').select();
+  runSearch();
+}
+function openStars() { closePanels(); $('#starPanel').hidden = false; renderStars(); }
+
+$('#filmstrip').addEventListener('click', e => {
+  const it = e.target.closest('.fs-item'); if (it) show(+it.dataset.n);
+});
+
+const pageInput = $('#pageInput');
+pageInput.addEventListener('focus', () => pageInput.select());
+pageInput.addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') { show(parseInt(pageInput.value, 10) || S.page); pageInput.blur(); }
+  if (e.key === 'Escape') { pageInput.value = S.page; pageInput.blur(); }
+});
+pageInput.addEventListener('blur', () => { pageInput.value = S.page; });
+
+/* scrubber */
+const scrub = $('#scrub');
+let scrubbing = false;
+const scrubTo = e => {
+  const r = scrub.getBoundingClientRect();
+  show(Math.round(clamp((e.clientX - r.left) / r.width, 0, 1) * (S.total - 1)) + 1, false);
+};
+scrub.addEventListener('pointerdown', e => { scrubbing = true; scrub.setPointerCapture(e.pointerId); scrubTo(e); });
+scrub.addEventListener('pointermove', e => { if (scrubbing) scrubTo(e); });
+scrub.addEventListener('pointerup', () => { scrubbing = false; });
+
+/* wheel / trackpad: swipe between slides, ⌘-scroll to zoom */
+let wheelLock = 0;
+$('#stage').addEventListener('wheel', e => {
+  if (e.metaKey || e.ctrlKey) { e.preventDefault(); setZoom(S.zoom * (e.deltaY < 0 ? 1.12 : 0.89)); return; }
+  if (S.zoom > 1.02) return;                 // zoomed in — let it scroll
+  e.preventDefault();
+  const now = Date.now();
+  if (now < wheelLock) return;
+  const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+  if (Math.abs(d) < 18) return;
+  wheelLock = now + 190;
+  show(S.page + (d > 0 ? 1 : -1));
+}, { passive: false });
+
+function toLibrary() {
+  S.token++;
+  showScreen('library');
+  send('title', { text: 'SlideView' });
+  closePanels();
+  renderGrid();
+}
+
+/* keyboard */
+let goBuf = '', goTimer = null;
+addEventListener('keydown', e => {
+  const tag = e.target.tagName;
+  const typing = tag === 'INPUT' || tag === 'TEXTAREA';
+
+  if (e.key === 'Escape') {
+    if (!$('#help').hidden) return void ($('#help').hidden = true);
+    if (!$('#searchPanel').hidden || !$('#starPanel').hidden) return closePanels();
+    if (typing) return e.target.blur();
+    if (document.body.dataset.screen === 'viewer') return toLibrary();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+    e.preventDefault();
+    if (document.body.dataset.screen === 'viewer') openSearch(); else $('#libFilter').focus();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); loadLibrary(); toast('Rescanned'); return; }
+  if (typing) return;
+
+  if (document.body.dataset.screen === 'library') {
+    if (e.key === 'Enter') { const f = $('#grid .card'); if (f) openDoc(f.dataset.id); }
+    if (e.key === '?') $('#help').hidden = false;
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const k = e.key;
+  if (k >= '0' && k <= '9') {
+    goBuf += k; clearTimeout(goTimer);
+    toast('Go to slide ' + goBuf);
+    goTimer = setTimeout(() => { show(parseInt(goBuf, 10)); goBuf = ''; }, 750);
+    e.preventDefault(); return;
+  }
+  switch (k) {
+    case 'ArrowRight': case 'ArrowDown': case 'PageDown': case 'n': case 'j':
+      e.preventDefault(); show(S.page + 1); break;
+    case 'ArrowLeft': case 'ArrowUp': case 'PageUp': case 'p': case 'k':
+      e.preventDefault(); show(S.page - 1); break;
+    case ' ':
+      e.preventDefault(); show(S.page + (e.shiftKey ? -1 : 1)); break;
+    case 'Home': e.preventDefault(); show(1); break;
+    case 'End':  e.preventDefault(); show(S.total); break;
+    case 'd': case 'D': {
+      const order = ['smart', 'invert', 'dim', 'light'];
+      const t = order[(order.indexOf(S.theme) + 1) % order.length];
+      setTheme(t); toast('Appearance: ' + t); break;
+    }
+    case 'f': case 'F': send('toggleFullScreen'); break;
+    case 't': case 'T': $('#stripBtn').click(); break;
+    case 's': e.shiftKey ? openStars() : toggleStar(); break;
+    case 'S': openStars(); break;
+    case '[': jumpStar(-1); break;
+    case ']': jumpStar(1); break;
+    case '+': case '=': setZoom(S.zoom * 1.25); break;
+    case '-': case '_': setZoom(S.zoom / 1.25); break;
+    case '0': S.fitMode = 'fit'; setZoom(1); break;
+    case 'w': case 'W': S.fitMode = S.fitMode === 'width' ? 'fit' : 'width'; setZoom(1);
+      toast(S.fitMode === 'width' ? 'Fit width' : 'Fit slide'); break;
+    case '/': e.preventDefault(); openSearch(); break;
+    case '?': $('#help').hidden = false; break;
+  }
+});
+
+/* resize */
+let rsTimer = null;
+new ResizeObserver(() => {
+  clearTimeout(rsTimer);
+  rsTimer = setTimeout(() => { if (S.pdf && !$('#viewer').hidden) show(S.page, false); }, 130);
+}).observe($('#stage'));
+
+/* right-click -> native menu (Copy, Google Lens, Gemini, open in Chrome…) */
+function slideMenu(e, id, page) {
+  if (!native) return;                     // plain browser: keep the default menu
+  e.preventDefault();
+  send('contextMenu', { id, page, x: e.clientX, y: e.clientY });
+}
+$('#stage').addEventListener('contextmenu', e => { if (S.doc) slideMenu(e, S.doc.id, S.page); });
+$('#filmstrip').addEventListener('contextmenu', e => {
+  const it = e.target.closest('.fs-item');
+  if (it && S.doc) slideMenu(e, S.doc.id, +it.dataset.n);
+});
+$('#grid').addEventListener('contextmenu', e => {
+  const c = e.target.closest('.card');
+  if (c) slideMenu(e, c.dataset.id, 1);
+});
+
+/* native bridge */
+window.sv = {
+  fullScreen(on) { S.fs = on; document.body.classList.toggle('fs', on); },
+  rootChanged() { S.subject = 'all'; loadLibrary(); },
+  toast(msg) { toast(msg); }
+};
+
+setTheme(S.theme);
+loadLibrary();
