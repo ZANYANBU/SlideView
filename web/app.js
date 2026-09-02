@@ -329,6 +329,7 @@ function showScreen(which) {
   $('#library').hidden = which !== 'library';
   $('#viewer').hidden = which !== 'viewer';
   document.body.dataset.screen = which;
+  renderTabs();
 }
 
 /* ── tabs ───────────────────────────────────────────────────────────
@@ -350,16 +351,69 @@ function newTab(d) {
            notes: {}, loading: false };
 }
 
+/* In full screen (and zen) the tab strip is folded into the toolbar row —
+   a strip of its own would cost ~42px of slide for no gain. */
+function relocateTabs() {
+  const bar = $('#tabbar');
+  const inline = document.body.classList.contains('fs') || document.body.classList.contains('zen');
+  const host = inline ? $('.vbar-left') : document.body;
+  if (bar.parentElement === host) return;
+  if (inline) host.appendChild(bar);
+  else document.body.insertBefore(bar, $('#screens'));
+  syncDragZone();
+}
+
+let zenTimer = null;
+function setZen(on) {
+  document.body.classList.toggle('zen', on);
+  document.body.classList.remove('peek');
+  $('#zenBtn').classList.toggle('on', on);
+  relocateTabs();
+  if (on) {
+    const h = document.createElement('div');
+    h.className = 'zen-hint';
+    h.textContent = 'Press H or Esc to bring the controls back · move the pointer to the top edge to peek';
+    document.body.appendChild(h);
+    clearTimeout(zenTimer);
+    zenTimer = setTimeout(() => h.remove(), 2600);
+  } else {
+    $('.zen-hint')?.remove();
+  }
+  if (S.pdf) show(S.page, false);
+}
+
+addEventListener('mousemove', e => {
+  if (!document.body.classList.contains('zen')) return;
+  const near = e.clientY < 6;
+  const away = e.clientY > 110;
+  if (near) document.body.classList.add('peek');
+  else if (away) document.body.classList.remove('peek');
+});
+
+/* Tell the shell where the tab strip stops being interactive, so it can put a
+   real AppKit drag region there (the web view otherwise eats titlebar drags). */
+function syncDragZone() {
+  if (!native) return;
+  if (document.body.classList.contains('fs') || document.body.classList.contains('zen')) {
+    return send('dragZone', { x: 1e6, h: 0 });
+  }
+  const bar = $('#tabbar').getBoundingClientRect();
+  const end = $('#newTabBtn').getBoundingClientRect().right;
+  send('dragZone', { x: Math.round(end + 6), h: Math.round(bar.height) });
+}
+
 function renderTabs() {
-  $('#tabbar').hidden = TABS.length < 2;
+  const onLib = document.body.dataset.screen === 'library';
+  $('#newTabBtn').classList.toggle('on', onLib);
   $('#tabs').innerHTML = TABS.map((t, i) => {
     const n = Object.keys(t.notes || {}).length;
-    return `<button class="tab ${t === cur ? 'on' : ''}" data-i="${i}" title="${esc(t.doc.name)}">
+    return `<button class="tab ${t === cur && !onLib ? 'on' : ''}" data-i="${i}" title="${esc(t.doc.name)}">
       ${n ? '<span class="tab-dot"></span>' : ''}
       <span class="tab-name">${esc(t.doc.name)}</span>
       <span class="tab-x" title="Close tab (⌘W)">✕</span>
     </button>`;
   }).join('');
+  requestAnimationFrame(syncDragZone);
 }
 
 async function openDoc(id, opts = {}) {
@@ -830,6 +884,7 @@ $('#backBtn').onclick = () => toLibrary();
 $('#prevBtn').onclick = () => show(S.page - 1);
 $('#nextBtn').onclick = () => show(S.page + 1);
 $('#fsBtn').onclick = () => send('toggleFullScreen');
+$('#zenBtn').onclick = () => setZen(!document.body.classList.contains('zen'));
 $('#starBtn').onclick = toggleStar;
 $('#stripBtn').onclick = () => {
   S.strip = !S.strip; store.set('sv:strip', S.strip);
@@ -933,6 +988,7 @@ addEventListener('keydown', e => {
 
   if (e.key === 'Escape') {
     if (!$('#help').hidden) return void ($('#help').hidden = true);
+    if (document.body.classList.contains('zen')) return setZen(false);
     if (!$('#searchPanel').hidden || !$('#starPanel').hidden) return closePanels();
     if (typing) return e.target.blur();
     if (document.body.dataset.screen === 'viewer') return toLibrary();
@@ -988,6 +1044,7 @@ addEventListener('keydown', e => {
       setTheme(t); toast('Appearance: ' + t); break;
     }
     case 'f': case 'F': send('toggleFullScreen'); break;
+    case 'h': case 'H': setZen(!document.body.classList.contains('zen')); break;
     case 't': case 'T': $('#stripBtn').click(); break;
     case 'n': case 'N': toggleNotes(); break;
     case 's': e.shiftKey ? openStars() : toggleStar(); break;
@@ -1008,8 +1065,10 @@ addEventListener('keydown', e => {
 let rsTimer = null;
 new ResizeObserver(() => {
   clearTimeout(rsTimer);
+  syncDragZone();
   rsTimer = setTimeout(() => { if (S.pdf && !$('#viewer').hidden) show(S.page, false); }, 130);
 }).observe($('#stage'));
+addEventListener('resize', syncDragZone);
 
 /* right-click -> native menu (Copy, Google Lens, Gemini, open in Chrome…) */
 function slideMenu(e, id, page) {
@@ -1029,7 +1088,13 @@ $('#grid').addEventListener('contextmenu', e => {
 
 /* native bridge */
 window.sv = {
-  fullScreen(on) { S.fs = on; document.body.classList.toggle('fs', on); },
+  fullScreen(on) {
+    S.fs = on;
+    document.body.classList.toggle('fs', on);
+    if (!on && document.body.classList.contains('zen')) setZen(false);
+    relocateTabs();
+    if (S.pdf) show(S.page, false);
+  },
   rootChanged() { S.subject = 'all'; loadLibrary(); },
   newTab() { toLibrary(); },
   closeTab() { if (cur) closeTab(cur); },
@@ -1037,4 +1102,6 @@ window.sv = {
 };
 
 setTheme(S.theme);
+relocateTabs();
+syncDragZone();
 loadLibrary();

@@ -100,11 +100,24 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
     }
 }
 
+/// Tabs now occupy the titlebar strip, so the web view swallows the drags that
+/// used to move the window. This transparent view sits above the web view in
+/// the empty area to the right of the tabs and gives that back — the same place
+/// Chrome lets you grab its window.
+final class WindowDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Only claim the point for dragging; never steal clicks meant for the page.
+        return bounds.contains(convert(point, from: superview)) ? self : nil
+    }
+}
+
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, NSWindowDelegate {
     var window: NSWindow!
     var web: WKWebView!
+    var dragView: WindowDragView!
     let server = HTTPServer()
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -138,7 +151,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window.backgroundColor = NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.086, alpha: 1)
         window.minSize = NSSize(width: 720, height: 520)
         window.delegate = self
-        window.contentView = web
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820))
+        web.frame = container.bounds
+        web.autoresizingMask = [.width, .height]
+        container.addSubview(web)
+
+        dragView = WindowDragView(frame: .zero)
+        dragView.autoresizingMask = [.minXMargin, .minYMargin]
+        container.addSubview(dragView)
+
+        window.contentView = container
         window.setFrameAutosaveName("SlideViewMain")
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -191,6 +213,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if let t = body["text"] as? String, !t.isEmpty {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(t, forType: .string)
+            }
+        case "dragZone":
+            // The page tells us where the tabs end; everything right of that
+            // (across the tab strip's height) becomes window-drag territory.
+            if let x = body["x"] as? Double, let h = body["h"] as? Double,
+               let host = web.superview {
+                let w = max(0, host.bounds.width - x)
+                dragView.frame = NSRect(x: x, y: host.bounds.height - h, width: w, height: h)
             }
         case "chooseRoot":
             chooseRoot()
