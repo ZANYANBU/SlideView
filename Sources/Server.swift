@@ -30,6 +30,8 @@ struct HTTPRequest {
     var method: String
     var path: String
     var query: [String: String]
+    var body: Data = Data()
+    var bodyText: String { String(decoding: body, as: UTF8.self) }
 }
 
 final class HTTPServer {
@@ -91,7 +93,13 @@ final class HTTPServer {
             if let d = data { buf.append(d) }
             if let r = buf.range(of: Data("\r\n\r\n".utf8)) {
                 let head = String(decoding: buf[..<r.lowerBound], as: UTF8.self)
-                self.respond(conn, head: head)
+                let need = Self.contentLength(head)
+                let have = Data(buf[r.upperBound...])
+                if have.count >= need {
+                    self.respond(conn, head: head, body: Data(have.prefix(need)))
+                } else {
+                    self.readBody(conn, head: head, body: have, need: need)
+                }
                 return
             }
             if error != nil || isComplete || buf.count > 128 * 1024 { conn.cancel(); return }
@@ -99,7 +107,31 @@ final class HTTPServer {
         }
     }
 
-    private func respond(_ conn: NWConnection, head: String) {
+    /// Keep pulling until the declared Content-Length has arrived (POSTed notes
+    /// can easily exceed a single TCP read).
+    private func readBody(_ conn: NWConnection, head: String, body: Data, need: Int) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 262144) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            var b = body
+            if let d = data { b.append(d) }
+            if b.count >= need { self.respond(conn, head: head, body: Data(b.prefix(need))); return }
+            if error != nil || isComplete { self.respond(conn, head: head, body: b); return }
+            if b.count > 8 * 1024 * 1024 { conn.cancel(); return }
+            self.readBody(conn, head: head, body: b, need: need)
+        }
+    }
+
+    private static func contentLength(_ head: String) -> Int {
+        for line in head.split(separator: "\r\n").dropFirst() {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            if parts.count == 2, parts[0].lowercased() == "content-length" {
+                return Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            }
+        }
+        return 0
+    }
+
+    private func respond(_ conn: NWConnection, head: String, body: Data = Data()) {
         let line = head.split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
         let parts = line.split(separator: " ")
         var res = HTTPResponse.text("bad request", status: 400)
@@ -122,7 +154,7 @@ final class HTTPServer {
                 }
             }
             path = path.removingPercentEncoding ?? path
-            let req = HTTPRequest(method: method, path: path, query: query)
+            let req = HTTPRequest(method: method, path: path, query: query, body: body)
             res = handler?(req) ?? .text("not found", status: 404)
         }
 

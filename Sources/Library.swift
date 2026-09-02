@@ -25,6 +25,7 @@ final class Library {
     private var states: [String: ConvState] = [:]
     private var errors: [String: String] = [:]
     private var pageCounts: [String: Int] = [:]   // keyed by cache filename (mtime+size aware)
+    private var notesCache: [String: [String: String]] = [:]
     private let lock = NSLock()
     private let convQueue = OperationQueue()
 
@@ -32,6 +33,7 @@ final class Library {
     let cacheDir: URL
     let thumbDir: URL
     let profileDir: URL
+    let notesDir: URL
 
     private static let convertible: Set<String> = ["pptx", "ppt", "odp", "key", "docx", "doc", "odt"]
     private static let native: Set<String> = ["pdf"]
@@ -42,11 +44,12 @@ final class Library {
             .appendingPathComponent("SlideView", isDirectory: true)
         cacheDir = support.appendingPathComponent("pdf", isDirectory: true)
         thumbDir = support.appendingPathComponent("thumbs", isDirectory: true)
+        notesDir = support.appendingPathComponent("notes", isDirectory: true)
         // LibreOffice takes its profile as a file:// URL; keep it away from
         // paths like "Application Support" whose space trips up the parser.
         profileDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.raja.slideview/lo-profile", isDirectory: true)
-        for d in [support, cacheDir, thumbDir, profileDir] {
+        for d in [support, cacheDir, thumbDir, profileDir, notesDir] {
             try? fm.createDirectory(at: d, withIntermediateDirectories: true)
         }
         convQueue.maxConcurrentOperationCount = 1   // one soffice instance per profile
@@ -228,6 +231,49 @@ final class Library {
             try? FileManager.default.removeItem(at: f)
         }
     }
+
+    // MARK: - Per-slide notes
+
+    /// Notes live in their own JSON file per deck, keyed by page number, and the
+    /// file records the deck's name and path so it still makes sense on its own.
+    /// They are deliberately NOT keyed by mtime — re-converting a deck after an
+    /// edit must not throw away what you wrote.
+    private func notesURL(_ id: String) -> URL { notesDir.appendingPathComponent("\(id).json") }
+
+    func notes(_ id: String) -> [String: String] {
+        lock.lock()
+        if let hit = notesCache[id] { lock.unlock(); return hit }
+        lock.unlock()
+
+        var out: [String: String] = [:]
+        if let d = try? Data(contentsOf: notesURL(id)),
+           let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let n = obj["notes"] as? [String: String] { out = n }
+        lock.lock(); notesCache[id] = out; lock.unlock()
+        return out
+    }
+
+    func setNote(_ id: String, page: Int, text: String) {
+        var n = notes(id)
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            n.removeValue(forKey: String(page))
+        } else {
+            n[String(page)] = text
+        }
+        lock.lock(); notesCache[id] = n; lock.unlock()
+
+        let d = doc(id)
+        let payload: [String: Any] = [
+            "name": d?.name ?? "", "path": d?.url.path ?? "",
+            "updated": ISO8601DateFormatter().string(from: Date()), "notes": n
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: notesURL(id), options: .atomic)
+        }
+    }
+
+    func noteCount(_ id: String) -> Int { notes(id).count }
 
     // MARK: - Metadata + thumbnails
 

@@ -28,11 +28,43 @@ Inversion is per-channel invert plus a 180° hue rotation, so a red heading stay
 red rather than turning cyan, and the result is compressed into a soft
 near-black / near-white range instead of harsh `#000` / `#fff`.
 
+## Tabs
+
+Decks open in tabs, Safari-style. The strip sits below the toolbar (the top 28px
+of the window belongs to the AppKit titlebar, which swallows clicks) and stays
+hidden while only one deck is open.
+
+`⌘T` open another deck · `⌘W` close tab · `⌘1`…`⌘9` switch · `⌃⇥` next tab
+`⌘`-click or middle-click a deck in the library to open it in a background tab.
+
+Each tab keeps its own page, zoom, stars, search index and notes. Render caches
+are keyed per document, so switching back to a tab is instant.
+
+## Notes
+
+`N` opens a notes panel docked to the right, holding one note **per slide**.
+Notes are saved on the server as JSON — one file per deck under
+`~/Library/Application Support/SlideView/notes/` — rather than in `localStorage`,
+so clearing a cache cannot take your revision notes with it. Each file records
+the deck's name and path, so it still makes sense on its own:
+
+    { "name": "Unit 1",
+      "path": "…/CN/Unit 1.pptx",
+      "notes": { "71": "OFC = optical fibre cable…" } }
+
+Writes are debounced and always flushed before the slide or tab changes.
+Slides carrying a note are dotted in the thumbnail rail and on the scrubber, and
+the deck's note count shows on its library card. `⧉` in the panel header copies
+every note in the deck as Markdown; `↑` `↓` jump between annotated slides.
+
+Notes are keyed by page only — editing and re-converting a deck keeps them.
+
 ## Keyboard
 
 `→ ␣ J` next · `← ⇧␣ K` prev · `Home/End` first/last · digits jump to a slide
 `D` appearance · `F` full screen · `T` thumbnail rail · `+ −` zoom · `0` fit · `W` fit width
-`S` star slide · `[ ]` prev/next starred · `⇧S` starred list · `⌘F` or `/` search · `?` help
+`S` star slide · `[ ]` prev/next starred · `⇧S` starred list · `N` notes
+`⌘F` or `/` search · `⌘T` `⌘W` `⌘1`-`⌘9` tabs · `?` help
 `Esc` back to library · `⌘R` rescan
 
 Reading position, stars and appearance are remembered per deck.
