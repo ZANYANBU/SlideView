@@ -98,6 +98,35 @@ open your real Chrome, where you are already signed in. Press `⌘V` there.
 The **+** in the sidebar adds folders; each is scanned recursively and grouped by
 subfolder. Hover a folder to remove it.
 
+## Markdown
+
+`.md` files are first-class: they are converted once to a paginated PDF and then
+behave exactly like any other deck — thumbnails, filmstrip, text search,
+per-slide notes and smart invert all work, and the text stays selectable.
+
+Rendering is deliberately *light* (dark on white); smart invert darkens it the
+same way it does a lecture PDF, so notes and slides look consistent side by side.
+
+Supported: headings, paragraphs, **bold**/*italic*/~~strike~~, inline and fenced
+code, blockquotes, ordered/unordered lists, task lists, tables, rules, links and
+images (local images are inlined as data URIs, so the render needs no file
+access).
+
+### Why pagination is done in JavaScript
+
+The obvious route — `NSPrintOperation` on a WKWebView — is unusable here, and
+both failure modes block the main thread and freeze the whole app:
+
+- with the web view in no window, it spins forever inside `-[NSView canDraw]`;
+- with an offscreen host window, it paginates into ~900 000 pages (a 240 MB PDF).
+
+So instead a script in the page inserts spacers to push any block that would
+straddle a page boundary onto the next page, and each page is then captured with
+`createPDF`, which is asynchronous and cannot stall the UI. PDFKit stitches the
+slices together. Headings use `padding-top` rather than `margin-top`, because
+collapsing margins would make `offsetTop` disagree with where a block actually
+paints — and the paginator reads `offsetTop`.
+
 ## Requirements
 
 - macOS 13+ (Apple Silicon; change `-target` in `build.sh` for Intel)
@@ -107,7 +136,7 @@ subfolder. Hover a folder to remove it.
 
 ## Layout
 
-    Sources/    Swift — HTTP server, library scan, LibreOffice, PDFKit, AppKit shell
+    Sources/    Swift — HTTP server, library scan, LibreOffice, Markdown, PDFKit, AppKit shell
     web/        UI — index.html, app.css, app.js, vendored pdf.js
     Tools/      icon generator
     build.sh    compile + assemble the .app

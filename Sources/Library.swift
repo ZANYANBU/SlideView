@@ -36,6 +36,7 @@ final class Library {
     let notesDir: URL
 
     private static let convertible: Set<String> = ["pptx", "ppt", "odp", "key", "docx", "doc", "odt"]
+    private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd"]
     private static let native: Set<String> = ["pdf"]
 
     private init() {
@@ -117,7 +118,8 @@ final class Library {
                 continue
             }
             let ext = url.pathExtension.lowercased()
-            guard Self.convertible.contains(ext) || Self.native.contains(ext) else { continue }
+            guard Self.convertible.contains(ext) || Self.native.contains(ext)
+                    || Self.markdown.contains(ext) else { continue }
             if url.lastPathComponent.hasPrefix("~$") || url.lastPathComponent.hasPrefix(".") { continue }
 
             let rel = url.deletingLastPathComponent().standardizedFileURL.path
@@ -175,6 +177,25 @@ final class Library {
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmp) }
 
+            if Self.markdown.contains(doc.ext) {
+                guard let text = Self.readText(doc.url) else {
+                    self.fail(doc, "Could not read \(doc.url.lastPathComponent) as text.")
+                    return
+                }
+                let html = Markdown.html(text, title: doc.name,
+                                         baseDir: doc.url.deletingLastPathComponent())
+                let produced = tmp.appendingPathComponent("md.pdf")
+                guard HTMLToPDF.render(html: html, to: produced) else {
+                    self.fail(doc, "Could not render this Markdown file to PDF.")
+                    return
+                }
+                try? FileManager.default.removeItem(at: out)
+                try? FileManager.default.moveItem(at: produced, to: out)
+                self.pruneOldCache(for: doc)
+                self.lock.lock(); self.states[doc.id] = .ready; self.lock.unlock()
+                return
+            }
+
             let soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
             guard FileManager.default.fileExists(atPath: soffice) else {
                 self.fail(doc, "LibreOffice not found at /Applications/LibreOffice.app")
@@ -213,6 +234,14 @@ final class Library {
                 self.fail(doc, error.localizedDescription)
             }
         }
+    }
+
+    /// Notes are not always UTF-8; fall back rather than refusing to open.
+    private static func readText(_ url: URL) -> String? {
+        if let s = try? String(contentsOf: url, encoding: .utf8) { return s }
+        var enc: String.Encoding = .utf8
+        if let s = try? String(contentsOf: url, usedEncoding: &enc) { return s }
+        return try? String(contentsOf: url, encoding: .isoLatin1)
     }
 
     private func fail(_ doc: Doc, _ msg: String) {
