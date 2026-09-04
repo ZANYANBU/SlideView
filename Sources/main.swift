@@ -83,6 +83,11 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         }
         return .json(lib.notes(id))
 
+    case "/api/graph":
+        let g = GraphBuilder.shared
+        g.build(force: req.query["rebuild"] == "1")
+        return .json(g.status())
+
     case "/api/thumb":
         guard let id = req.query["id"], let d = lib.doc(id) else { return .text("no such document", status: 404) }
         guard let png = lib.thumbnail(d) else { return .text("no thumb", status: 404) }

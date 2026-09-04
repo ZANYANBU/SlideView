@@ -14,8 +14,8 @@ invert, Google Lens and Gemini.
 | | Formats | Rendered by |
 |---|---|---|
 | Slides | `pptx` `ppt` `odp` `key` `pps` `ppsx` | LibreOffice |
-| Documents | `pdf` · `docx` `doc` `odt` `rtf` `pages` | direct · LibreOffice |
-| Spreadsheets | `xlsx` `xls` `ods` `numbers` `csv` `tsv` | LibreOffice |
+| Documents | `pdf` · `docx` `doc` `odt` `rtf` `rtfd` `html` · `pages` | direct · **TextKit** · LibreOffice |
+| Spreadsheets | `csv` `tsv` · `xlsx` `xls` `ods` `numbers` | in-process · LibreOffice |
 | Notes | `md` `markdown` `rmd` `txt` `tex` `org` `rst` | in-process |
 | Notebooks | `ipynb` | in-process |
 | Images | `png` `jpg` `jpeg` `heic` `heif` `gif` `webp` `tiff` `bmp` | PDFKit |
@@ -30,6 +30,40 @@ own base64, so no kernel is needed).
 library stays clean, while `⌘O`, drag-and-drop and Finder's *Open With* will open
 anything in the table above. Build and dependency directories (`node_modules`,
 `.git`, `venv`, `DerivedData`, `Pods`, `build`, …) are skipped when scanning.
+
+## Map
+
+Press **M**, or *Map* in the library header, for a force-directed view of
+everything you study from. Two kinds of edge:
+
+- **Written links** (blue) — `[[wikilinks]]` and `](file)` references in your
+  notes, resolved against the library.
+- **Shared topics** (grey) — significant vocabulary two documents have in
+  common, scored with TF-IDF so that frequent words don't tie everything to
+  everything. Each document keeps a signature of its ~28 strongest terms;
+  edges are capped at four per node so the map stays readable.
+
+Signatures are cached per converted PDF, so the map is only expensive the first
+time. Hover a node for its top terms, click to open it, drag to rearrange,
+scroll to zoom, double-click to reframe.
+
+## Prior art, and why none of it is vendored
+
+Worth stating plainly, because it constrains what this repo can contain:
+
+| Project | What it does | Licence |
+|---|---|---|
+| [NightPDF](https://github.com/Lunarequest/NightPDF) | Dark-mode PDF reader, Electron + PDF.js | **GPLv2** |
+| [Logseq](https://github.com/logseq/logseq) | Local notes with a graph view | **AGPL-3.0** |
+| [Obsidian](https://github.com/obsidianmd) | Notes with a graph view | **closed source** — the org holds docs, API typings and sample plugins only; there is no app source or backend to connect to |
+| [Skim](https://skim-app.sourceforge.io) | macOS PDF reader/annotator | BSD |
+| [Sioyek](https://github.com/ahrm/sioyek) | Research-paper reader | GPLv3 |
+
+Copying from the GPL/AGPL projects would force this MIT repo to relicense, and
+Obsidian has nothing to copy. So the ideas were worth studying and the code was
+not: the smart-invert pass, the map, and every converter here are written from
+scratch. The only vendored third-party code is PDF.js (Apache 2.0), credited in
+[web/vendor/NOTICE.md](web/vendor/NOTICE.md).
 
 ## macOS integration
 
@@ -171,8 +205,15 @@ paints — and the paginator reads `offsetTop`.
 
 - macOS 13+ (Apple Silicon; change `-target` in `build.sh` for Intel)
 - Xcode command line tools (`swiftc`)
-- [LibreOffice](https://www.libreoffice.org) in `/Applications` — only needed to
-  convert PowerPoint files. PDFs open without it.
+- [LibreOffice](https://www.libreoffice.org) in `/Applications` — **only** for
+  slide decks (`pptx`, `ppt`, `odp`, `key`) and spreadsheets (`xlsx`, `xls`,
+  `ods`, `numbers`) and `pages`. Everything else renders natively.
+
+  Word, RTF, ODT and HTML go through Foundation and TextKit instead: drawn via
+  `NSLayoutManager` so embedded images survive, and roughly **30x faster** than
+  shelling out (0.24s vs ~8s for a typical document). If Foundation can't parse
+  a file, it falls back to LibreOffice; if LibreOffice is missing, the error
+  says exactly what is needed and why.
 
 ## Layout
 

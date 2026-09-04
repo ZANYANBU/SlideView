@@ -35,13 +35,17 @@ final class Library {
     let profileDir: URL
     let notesDir: URL
 
-    enum Kind { case pdf, office, markdown, image, text, notebook }
+    enum Kind { case pdf, office, attributed, table, markdown, image, text, notebook }
 
     /// Handled by LibreOffice.
+    /// Still needs LibreOffice.
     private static let office: Set<String> = [
         "pptx", "ppt", "odp", "key", "pps", "ppsx",
-        "docx", "doc", "odt", "rtf", "pages",
-        "xlsx", "xls", "ods", "numbers", "csv", "tsv"]
+        "xlsx", "xls", "ods", "numbers", "pages"]
+    /// Read natively by Foundation and drawn with TextKit — no LibreOffice.
+    private static let attributed: Set<String> = [
+        "docx", "doc", "odt", "rtf", "rtfd", "html", "htm", "webarchive"]
+    private static let table: Set<String> = ["csv", "tsv"]
     private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd", "rmd"]
     private static let image: Set<String> = [
         "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "tiff", "tif", "bmp"]
@@ -63,12 +67,17 @@ final class Library {
         "__pycache__", "Pods", "DerivedData", ".next", ".nuxt", "vendor", "coverage",
         ".cache", ".gradle", "bin", "obj", "SlideView"]
 
-    static var scanned: Set<String> { native.union(office).union(markdown).union(image).union(notebook).union(plain) }
+    static var scanned: Set<String> {
+        native.union(office).union(attributed).union(table)
+              .union(markdown).union(image).union(notebook).union(plain)
+    }
     static var openable: Set<String> { scanned.union(code) }
 
     static func kind(_ ext: String) -> Kind? {
         if native.contains(ext) { return .pdf }
         if office.contains(ext) { return .office }
+        if attributed.contains(ext) { return .attributed }
+        if table.contains(ext) { return .table }
         if markdown.contains(ext) { return .markdown }
         if image.contains(ext) { return .image }
         if notebook.contains(ext) { return .notebook }
@@ -278,6 +287,20 @@ final class Library {
                     }
                     madeIt = HTMLToPDF.render(html: html, to: produced)
 
+                case .table:
+                    guard let text = Converters.readText(doc.url) else {
+                        self.fail(doc, "Could not read \(doc.url.lastPathComponent) as text."); return
+                    }
+                    madeIt = HTMLToPDF.render(html: Converters.tableHTML(doc.url, text: text), to: produced)
+
+                case .attributed:
+                    madeIt = Converters.attributedPDF(doc.url, to: produced)
+                    if !madeIt {
+                        // Fall back to LibreOffice for anything Foundation chokes on.
+                        self.convertWithLibreOffice(doc, tmp: tmp, out: out)
+                        return
+                    }
+
                 default:
                     self.fail(doc, "Unsupported file type .\(doc.ext)"); return
                 }
@@ -290,43 +313,55 @@ final class Library {
                 return
             }
 
-            let soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-            guard FileManager.default.fileExists(atPath: soffice) else {
-                self.fail(doc, "LibreOffice not found at /Applications/LibreOffice.app")
+            self.convertWithLibreOffice(doc, tmp: tmp, out: out)
+        }
+    }
+
+    private func convertWithLibreOffice(_ doc: Doc, tmp: URL, out: URL) {
+        let soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+        guard FileManager.default.fileExists(atPath: soffice) else {
+            fail(doc, """
+                 LibreOffice is not installed.
+
+                 SlideView opens PDFs, Word documents, Markdown, notebooks, \
+                 images, text and CSV on its own — but slide decks and \
+                 spreadsheets still need LibreOffice to convert.
+
+                 Install it free from libreoffice.org, then reopen this file.
+                 """)
+            return
+        }
+
+        let profileURL = "file://" + (profileDir.path
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? profileDir.path)
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: soffice)
+        p.arguments = [
+            "-env:UserInstallation=\(profileURL)",
+            "--headless", "--norestore", "--nolockcheck",
+            "--convert-to", "pdf", "--outdir", tmp.path, doc.url.path
+        ]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+
+        do {
+            try p.run()
+            let log = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            p.waitUntilExit()
+            let produced = (try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil))?
+                .first { $0.pathExtension.lowercased() == "pdf" }
+            guard let produced else {
+                fail(doc, "Conversion produced no PDF.\n\(log.suffix(400))")
                 return
             }
-
-            let profileURL = "file://" + (self.profileDir.path
-                .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? self.profileDir.path)
-
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: soffice)
-            p.arguments = [
-                "-env:UserInstallation=\(profileURL)",
-                "--headless", "--norestore", "--nolockcheck",
-                "--convert-to", "pdf", "--outdir", tmp.path, doc.url.path
-            ]
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = pipe
-
-            do {
-                try p.run()
-                let log = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                p.waitUntilExit()
-                let produced = (try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil))?
-                    .first { $0.pathExtension.lowercased() == "pdf" }
-                guard let produced else {
-                    self.fail(doc, "Conversion produced no PDF.\n\(log.suffix(400))")
-                    return
-                }
-                try? FileManager.default.removeItem(at: out)
-                try FileManager.default.moveItem(at: produced, to: out)
-                self.pruneOldCache(for: doc)
-                self.lock.lock(); self.states[doc.id] = .ready; self.lock.unlock()
-            } catch {
-                self.fail(doc, error.localizedDescription)
-            }
+            try? FileManager.default.removeItem(at: out)
+            try FileManager.default.moveItem(at: produced, to: out)
+            pruneOldCache(for: doc)
+            lock.lock(); states[doc.id] = .ready; lock.unlock()
+        } catch {
+            fail(doc, error.localizedDescription)
         }
     }
 
