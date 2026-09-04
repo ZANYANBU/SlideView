@@ -6,7 +6,17 @@ import Foundation
 enum Markdown {
 
     static func html(_ source: String, title: String, baseDir: URL) -> String {
-        let body = blocks(source, baseDir: baseDir)
+        page(title: title, body: bodyHTML(source, baseDir: baseDir))
+    }
+
+    /// Just the block-level HTML, for formats that assemble their own body.
+    static func bodyHTML(_ source: String, baseDir: URL) -> String {
+        blocks(source, baseDir: baseDir)
+    }
+
+    /// The shared document shell — every format SlideView renders uses this CSS,
+    /// so a notebook, a code listing and a set of notes all look like one app.
+    static func page(title: String, body: String) -> String {
         return """
         <!doctype html><html><head><meta charset="utf-8"><title>\(escape(title))</title>
         <style>
@@ -39,6 +49,20 @@ enum Markdown {
           img{ max-width:100%; height:auto }
           a{ color:#0a58c8; text-decoration:none }
           .task{ list-style:none; margin-left:-1.2em }
+          /* code listings and notebooks */
+          .fname{ font:600 12px/1 ui-monospace,"SF Mono",Menlo,monospace; color:#6a6a76;
+                  padding-bottom:10px; border-bottom:1px solid #e3e3e8; margin-bottom:16px; }
+          .cell{ margin:0 0 14px }
+          .prompt{ font:600 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace;
+                   color:#8a8a96; margin:0 0 4px; letter-spacing:.3px }
+          pre.out{ background:#fbfbfd; border:1px solid #ececf2; color:#3a3a44; }
+          pre.err{ background:#fff3f3; border:1px solid #f3d6d6; color:#8a2020; }
+          .listing{ counter-reset:l; }
+          .listing .ln{ display:flex; gap:12px; align-items:baseline; }
+          .listing .n{ flex:none; width:30px; text-align:right; color:#a8a8b4;
+                       font:11px/1.65 ui-monospace,"SF Mono",Menlo,monospace; }
+          .listing .c{ flex:1; min-width:0; white-space:pre-wrap; word-break:break-word;
+                       font:11.5px/1.65 ui-monospace,"SF Mono",Menlo,monospace; }
         </style></head><body>
         \(body)
         </body></html>

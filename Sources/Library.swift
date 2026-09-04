@@ -35,9 +35,46 @@ final class Library {
     let profileDir: URL
     let notesDir: URL
 
-    private static let convertible: Set<String> = ["pptx", "ppt", "odp", "key", "docx", "doc", "odt"]
-    private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd"]
+    enum Kind { case pdf, office, markdown, image, text, notebook }
+
+    /// Handled by LibreOffice.
+    private static let office: Set<String> = [
+        "pptx", "ppt", "odp", "key", "pps", "ppsx",
+        "docx", "doc", "odt", "rtf", "pages",
+        "xlsx", "xls", "ods", "numbers", "csv", "tsv"]
+    private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd", "rmd"]
+    private static let image: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "tiff", "tif", "bmp"]
+    private static let notebook: Set<String> = ["ipynb"]
     private static let native: Set<String> = ["pdf"]
+    /// Plain text worth indexing as study material.
+    private static let plain: Set<String> = ["txt", "tex", "org", "rst"]
+    /// Source and config files: openable on demand, but deliberately NOT scanned —
+    /// indexing every .js/.json in a code folder would bury the actual material.
+    private static let code: Set<String> = [
+        "swift", "py", "c", "h", "cpp", "cc", "cxx", "hpp", "m", "mm", "cs", "java", "kt",
+        "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "rs", "rb", "php", "pl", "r", "lua",
+        "sh", "zsh", "bash", "sql", "json", "yaml", "yml", "xml", "html", "htm", "css",
+        "scss", "less", "toml", "ini", "cfg", "conf", "env", "gradle", "make", "mk", "log"]
+
+    /// Directories that are never study material.
+    private static let skipDirs: Set<String> = [
+        "node_modules", ".git", "build", "dist", "out", "target", "venv", ".venv", "env",
+        "__pycache__", "Pods", "DerivedData", ".next", ".nuxt", "vendor", "coverage",
+        ".cache", ".gradle", "bin", "obj", "SlideView"]
+
+    static var scanned: Set<String> { native.union(office).union(markdown).union(image).union(notebook).union(plain) }
+    static var openable: Set<String> { scanned.union(code) }
+
+    static func kind(_ ext: String) -> Kind? {
+        if native.contains(ext) { return .pdf }
+        if office.contains(ext) { return .office }
+        if markdown.contains(ext) { return .markdown }
+        if image.contains(ext) { return .image }
+        if notebook.contains(ext) { return .notebook }
+        if plain.contains(ext) || code.contains(ext) { return .text }
+        return nil
+    }
 
     private init() {
         let fm = FileManager.default
@@ -97,9 +134,41 @@ final class Library {
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         lock.lock()
-        docs = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
+        var map = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
+        for (id, d) in adopted where map[id] == nil {
+            if FileManager.default.fileExists(atPath: d.url.path) { map[id] = d; found.append(d) }
+        }
+        docs = map
         lock.unlock()
         return found
+    }
+
+    // MARK: - Files opened from outside the library
+
+    private var adopted: [String: Doc] = [:]
+
+    /// Register a file that is not inside any library folder — opened from
+    /// Finder, dropped on the window, or picked with ⌘O.
+    @discardableResult
+    func adopt(_ url: URL) -> Doc? {
+        let ext = url.pathExtension.lowercased()
+        guard Self.openable.contains(ext),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let doc = Doc(id: Self.hash(url.standardizedFileURL.path),
+                      url: url.standardizedFileURL,
+                      name: url.deletingPathExtension().lastPathComponent,
+                      subject: "Opened files",
+                      ext: ext,
+                      size: vals?.fileSize ?? 0,
+                      modified: vals?.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                      needsConversion: Self.kind(ext) != .pdf)
+        lock.lock()
+        adopted[doc.id] = doc
+        docs[doc.id] = doc
+        lock.unlock()
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        return doc
     }
 
     private func scanOne(_ root: URL) -> [Doc] {
@@ -114,12 +183,12 @@ final class Library {
             let vals = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
             if vals?.isDirectory == true {
                 let n = url.lastPathComponent
-                if n == "SlideView" || n == "node_modules" || n.hasPrefix(".") { en.skipDescendants() }
+                if Self.skipDirs.contains(n) || n.hasPrefix(".") { en.skipDescendants() }
                 continue
             }
             let ext = url.pathExtension.lowercased()
-            guard Self.convertible.contains(ext) || Self.native.contains(ext)
-                    || Self.markdown.contains(ext) else { continue }
+            guard Self.scanned.contains(ext) else { continue }
+            if (vals?.fileSize ?? 0) > 300 * 1024 * 1024 { continue }
             if url.lastPathComponent.hasPrefix("~$") || url.lastPathComponent.hasPrefix(".") { continue }
 
             let rel = url.deletingLastPathComponent().standardizedFileURL.path
@@ -136,7 +205,7 @@ final class Library {
                           ext: ext,
                           size: vals?.fileSize ?? 0,
                           modified: vals?.contentModificationDate?.timeIntervalSince1970 ?? 0,
-                          needsConversion: !Self.native.contains(ext))
+                          needsConversion: Self.kind(ext) != .pdf)
             found.append(doc)
         }
         return found
@@ -177,18 +246,43 @@ final class Library {
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmp) }
 
-            if Self.markdown.contains(doc.ext) {
-                guard let text = Self.readText(doc.url) else {
-                    self.fail(doc, "Could not read \(doc.url.lastPathComponent) as text.")
-                    return
+            // Everything except LibreOffice's formats is rendered in-process.
+            let kind = Self.kind(doc.ext)
+            if kind != .office && kind != .pdf {
+                let produced = tmp.appendingPathComponent("out.pdf")
+                var madeIt = false
+
+                switch kind {
+                case .image:
+                    madeIt = Converters.imagePDF(doc.url, to: produced)
+                    if !madeIt { self.fail(doc, "Could not read this image."); return }
+
+                case .markdown:
+                    guard let text = Converters.readText(doc.url) else {
+                        self.fail(doc, "Could not read \(doc.url.lastPathComponent) as text."); return
+                    }
+                    madeIt = HTMLToPDF.render(
+                        html: Markdown.html(text, title: doc.name,
+                                            baseDir: doc.url.deletingLastPathComponent()),
+                        to: produced)
+
+                case .text:
+                    guard let text = Converters.readText(doc.url) else {
+                        self.fail(doc, "Could not read \(doc.url.lastPathComponent) as text."); return
+                    }
+                    madeIt = HTMLToPDF.render(html: Converters.textHTML(doc.url, text: text), to: produced)
+
+                case .notebook:
+                    guard let html = Converters.notebookHTML(doc.url) else {
+                        self.fail(doc, "This notebook could not be parsed."); return
+                    }
+                    madeIt = HTMLToPDF.render(html: html, to: produced)
+
+                default:
+                    self.fail(doc, "Unsupported file type .\(doc.ext)"); return
                 }
-                let html = Markdown.html(text, title: doc.name,
-                                         baseDir: doc.url.deletingLastPathComponent())
-                let produced = tmp.appendingPathComponent("md.pdf")
-                guard HTMLToPDF.render(html: html, to: produced) else {
-                    self.fail(doc, "Could not render this Markdown file to PDF.")
-                    return
-                }
+
+                guard madeIt else { self.fail(doc, "Could not render this file to PDF."); return }
                 try? FileManager.default.removeItem(at: out)
                 try? FileManager.default.moveItem(at: produced, to: out)
                 self.pruneOldCache(for: doc)
@@ -234,14 +328,6 @@ final class Library {
                 self.fail(doc, error.localizedDescription)
             }
         }
-    }
-
-    /// Notes are not always UTF-8; fall back rather than refusing to open.
-    private static func readText(_ url: URL) -> String? {
-        if let s = try? String(contentsOf: url, encoding: .utf8) { return s }
-        var enc: String.Encoding = .utf8
-        if let s = try? String(contentsOf: url, usedEncoding: &enc) { return s }
-        return try? String(contentsOf: url, encoding: .isoLatin1)
     }
 
     private func fail(_ doc: Doc, _ msg: String) {

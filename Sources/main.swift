@@ -112,12 +112,27 @@ final class WindowDragView: NSView {
     }
 }
 
+/// Container that accepts files and folders dropped anywhere on the window.
+final class RootView: NSView {
+    var onDrop: (([URL]) -> Void)?
+    override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
+        guard let urls = s.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                          options: nil) as? [URL],
+              !urls.isEmpty else { return false }
+        onDrop?(urls)
+        return true
+    }
+}
+
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, NSWindowDelegate, NSMenuDelegate {
     var window: NSWindow!
     var web: WKWebView!
     var dragView: WindowDragView!
+    let recentMenu = NSMenu(title: "Open Recent")
     let server = HTTPServer()
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -151,7 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window.backgroundColor = NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.086, alpha: 1)
         window.minSize = NSSize(width: 720, height: 520)
         window.delegate = self
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820))
+        let container = RootView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820))
+        container.registerForDraggedTypes([.fileURL])
+        container.onDrop = { [weak self] urls in self?.handleOpen(urls) }
+        web.unregisterDraggedTypes()
         web.frame = container.bounds
         web.autoresizingMask = [.width, .height]
         container.addSubview(web)
@@ -185,11 +203,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
 
+    // MARK: Opening documents
+
+    private var webReady = false
+    private var pendingOpens: [URL] = []
+
+    func application(_ app: NSApplication, open urls: [URL]) { handleOpen(urls) }
+
+    func handleOpen(_ urls: [URL]) {
+        var folders: [URL] = []
+        var files: [URL] = []
+        for u in urls {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
+            if isDir.boolValue { folders.append(u) } else { files.append(u) }
+        }
+        if !folders.isEmpty {
+            Library.shared.addRoots(folders)
+            web?.evaluateJavaScript("window.sv && window.sv.rootChanged && window.sv.rootChanged()")
+        }
+        guard !files.isEmpty else { return }
+        guard webReady else { pendingOpens.append(contentsOf: files); return }
+
+        var ids: [String] = []
+        var rejected: [String] = []
+        for f in files {
+            if let d = Library.shared.adopt(f) { ids.append(d.id) }
+            else { rejected.append(f.lastPathComponent) }
+        }
+        if let first = ids.first {
+            let list = ids.map { "'\($0)'" }.joined(separator: ",")
+            web.evaluateJavaScript("window.sv && window.sv.openPaths && window.sv.openPaths([\(list)])")
+            _ = first
+        }
+        if !rejected.isEmpty {
+            let a = NSAlert()
+            a.messageText = rejected.count == 1 ? "Can't open \(rejected[0])"
+                                                : "Can't open \(rejected.count) of those files"
+            a.informativeText = "SlideView opens documents, slides, spreadsheets, images, notebooks, Markdown and text files."
+            a.runModal()
+        }
+    }
+
+    private func flushPendingOpens() {
+        guard webReady, !pendingOpens.isEmpty else { return }
+        let urls = pendingOpens
+        pendingOpens.removeAll()
+        handleOpen(urls)
+    }
+
+    private func openPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedFileTypes = Array(Library.openable)
+        panel.message = "Choose a document, deck, notebook, image or notes file"
+        panel.begin { [weak self] r in
+            guard r == .OK else { return }
+            self?.handleOpen(panel.urls)
+        }
+    }
+
     // MARK: JS bridge
 
     func userContentController(_ c: WKUserContentController, didReceive msg: WKScriptMessage) {
         guard let body = msg.body as? [String: Any], let cmd = body["cmd"] as? String else { return }
         switch cmd {
+        case "ready":
+            webReady = true
+            flushPendingOpens()
         case "toggleFullScreen":
             window.toggleFullScreen(nil)
         case "title":
@@ -369,61 +452,194 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     // MARK: Menu
 
+    private func mi(_ title: String, _ key: String = "",
+                    _ mods: NSEvent.ModifierFlags = [.command], cmd: String) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: #selector(runCmd(_:)), keyEquivalent: key)
+        if !key.isEmpty { it.keyEquivalentModifierMask = mods }
+        it.target = self
+        it.representedObject = cmd
+        return it
+    }
+
+    @objc private func runCmd(_ sender: NSMenuItem) {
+        guard let cmd = sender.representedObject as? String else { return }
+        web.evaluateJavaScript("window.sv && window.sv.cmd && window.sv.cmd('\(cmd)')")
+    }
+
     private func buildMenu() {
         let main = NSMenu()
 
+        // ── SlideView ────────────────────────────────────────────────
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About SlideView", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About SlideView",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        let openFolder = NSMenuItem(title: "Add Folder to Library…", action: #selector(menuChooseRoot), keyEquivalent: "o")
-        openFolder.target = self
-        appMenu.addItem(openFolder)
+        let addFolder = NSMenuItem(title: "Add Folder to Library…",
+                                   action: #selector(menuChooseRoot), keyEquivalent: "o")
+        addFolder.keyEquivalentModifierMask = [.command, .shift]
+        addFolder.target = self
+        appMenu.addItem(addFolder)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide SlideView", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = NSMenuItem(title: "Hide Others",
+                                    action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit SlideView", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
+        // ── File ─────────────────────────────────────────────────────
+        let fileItem = NSMenuItem()
+        let file = NSMenu(title: "File")
+        let open = NSMenuItem(title: "Open…", action: #selector(menuOpen), keyEquivalent: "o")
+        open.target = self
+        file.addItem(open)
+        let recentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        recentMenu.delegate = self
+        recentItem.submenu = recentMenu
+        file.addItem(recentItem)
+        file.addItem(.separator())
+        file.addItem(mi("Close Tab", "w", cmd: "closeTab"))
+        file.addItem(.separator())
+        file.addItem(mi("Export Deck Notes as Markdown…", "e", [.command, .option], cmd: "exportNotes"))
+        let reveal = NSMenuItem(title: "Reveal Original in Finder", action: #selector(menuReveal), keyEquivalent: "r")
+        reveal.keyEquivalentModifierMask = [.command, .shift]
+        reveal.target = self
+        file.addItem(reveal)
+        file.addItem(mi("Rescan Library", "r", cmd: "rescan"))
+        fileItem.submenu = file
+        main.addItem(fileItem)
+
+        // ── Edit ─────────────────────────────────────────────────────
         let editItem = NSMenuItem()
         let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        edit.addItem(mi("Find in Deck…", "f", cmd: "search"))
         editItem.submenu = edit
         main.addItem(editItem)
 
+        // ── View ─────────────────────────────────────────────────────
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
-        let fs = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        let appearance = NSMenu(title: "Appearance")
+        appearance.addItem(mi("Smart Invert", "1", [.command, .option], cmd: "theme:smart"))
+        appearance.addItem(mi("Invert Everything", "2", [.command, .option], cmd: "theme:invert"))
+        appearance.addItem(mi("Dim", "3", [.command, .option], cmd: "theme:dim"))
+        appearance.addItem(mi("Original Colours", "4", [.command, .option], cmd: "theme:light"))
+        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        appearanceItem.submenu = appearance
+        view.addItem(appearanceItem)
+        view.addItem(.separator())
+        view.addItem(mi("Hide All but the Slide", "h", [.command, .control], cmd: "zen"))
+        view.addItem(mi("Thumbnail Rail", "t", [.command, .option], cmd: "strip"))
+        view.addItem(mi("Notes", "n", [.command, .option], cmd: "notes"))
+        view.addItem(.separator())
+        view.addItem(mi("Zoom In", "+", cmd: "zoomIn"))
+        view.addItem(mi("Zoom Out", "-", cmd: "zoomOut"))
+        view.addItem(mi("Fit to Window", "0", cmd: "fit"))
+        view.addItem(mi("Fit to Width", "0", [.command, .option], cmd: "fitWidth"))
+        view.addItem(.separator())
+        let fs = NSMenuItem(title: "Enter Full Screen",
+                            action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fs.keyEquivalentModifierMask = [.command, .control]
         view.addItem(fs)
         let reload = NSMenuItem(title: "Reload", action: #selector(menuReload), keyEquivalent: "r")
-        reload.keyEquivalentModifierMask = [.command, .option]   // ⌘R is "rescan library"
+        reload.keyEquivalentModifierMask = [.command, .option]
         reload.target = self
         view.addItem(reload)
         viewItem.submenu = view
         main.addItem(viewItem)
 
+        // ── Go ───────────────────────────────────────────────────────
+        let goItem = NSMenuItem()
+        let go = NSMenu(title: "Go")
+        go.addItem(mi("Next Slide", cmd: "next"))
+        go.addItem(mi("Previous Slide", cmd: "prev"))
+        go.addItem(mi("First Slide", cmd: "first"))
+        go.addItem(mi("Last Slide", cmd: "last"))
+        go.addItem(.separator())
+        go.addItem(mi("Go to Slide…", "g", cmd: "goto"))
+        go.addItem(.separator())
+        go.addItem(mi("Star This Slide", "d", cmd: "star"))
+        go.addItem(mi("Next Starred", "]", [.command, .option], cmd: "nextStar"))
+        go.addItem(mi("Previous Starred", "[", [.command, .option], cmd: "prevStar"))
+        go.addItem(mi("Starred Slides", "s", [.command, .option], cmd: "starList"))
+        go.addItem(.separator())
+        go.addItem(mi("Library", "l", cmd: "library"))
+        goItem.submenu = go
+        main.addItem(goItem)
+
+        // ── Window ───────────────────────────────────────────────────
         let winItem = NSMenuItem()
         let win = NSMenu(title: "Window")
-        // ⌘T / ⌘W belong to the tab strip; the window itself moves to ⇧⌘W.
-        let newTab = NSMenuItem(title: "New Tab", action: #selector(menuNewTab), keyEquivalent: "t")
-        newTab.target = self
-        win.addItem(newTab)
-        let closeTab = NSMenuItem(title: "Close Tab", action: #selector(menuCloseTab), keyEquivalent: "w")
-        closeTab.target = self
-        win.addItem(closeTab)
+        win.addItem(mi("New Tab", "t", cmd: "newTab"))
+        win.addItem(mi("Next Tab", "}", [.command, .shift], cmd: "nextTab"))
+        win.addItem(mi("Previous Tab", "{", [.command, .shift], cmd: "prevTab"))
         win.addItem(.separator())
         win.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        let closeWin = NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        win.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let closeWin = NSMenuItem(title: "Close Window",
+                                  action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         closeWin.keyEquivalentModifierMask = [.command, .shift]
         win.addItem(closeWin)
         winItem.submenu = win
         main.addItem(winItem)
         NSApp.windowsMenu = win
 
+        // ── Help ─────────────────────────────────────────────────────
+        let helpItem = NSMenuItem()
+        let help = NSMenu(title: "Help")
+        help.addItem(mi("Keyboard Shortcuts", "/", cmd: "help"))
+        helpItem.submenu = help
+        main.addItem(helpItem)
+        NSApp.helpMenu = help
+
         NSApp.mainMenu = main
     }
+
+    @objc private func menuOpen() { openPanel() }
+    @objc private func menuReveal() {
+        web.evaluateJavaScript("window.sv && window.sv.cmd && window.sv.cmd('reveal')")
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === recentMenu else { return }
+        menu.removeAllItems()
+        let urls = NSDocumentController.shared.recentDocumentURLs
+        if urls.isEmpty {
+            let none = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+            return
+        }
+        for u in urls.prefix(12) {
+            let it = NSMenuItem(title: u.lastPathComponent, action: #selector(openRecent(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = u
+            it.toolTip = u.path
+            menu.addItem(it)
+        }
+        menu.addItem(.separator())
+        let clear = NSMenuItem(title: "Clear Menu", action: #selector(clearRecents), keyEquivalent: "")
+        clear.target = self
+        menu.addItem(clear)
+    }
+    @objc private func openRecent(_ sender: NSMenuItem) {
+        if let u = sender.representedObject as? URL { handleOpen([u]) }
+    }
+    @objc private func clearRecents() { NSDocumentController.shared.clearRecentDocuments(nil) }
 
     @objc private func menuChooseRoot() { chooseRoot() }
     @objc private func menuReload() { web.reload() }
