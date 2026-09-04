@@ -328,6 +328,7 @@ function card(d) {
 function showScreen(which) {
   $('#library').hidden = which !== 'library';
   $('#viewer').hidden = which !== 'viewer';
+  $('#graph').hidden = which !== 'graph';
   document.body.dataset.screen = which;
   renderTabs();
 }
@@ -992,6 +993,7 @@ addEventListener('keydown', e => {
     if (!$('#searchPanel').hidden || !$('#starPanel').hidden) return closePanels();
     if (typing) return e.target.blur();
     if (document.body.dataset.screen === 'viewer') return toLibrary();
+    if (document.body.dataset.screen === 'graph') return toLibrary();
     if (cur) { showScreen('viewer'); renderTabs(); }
     return;
   }
@@ -1018,6 +1020,7 @@ addEventListener('keydown', e => {
   if (document.body.dataset.screen === 'library') {
     if (e.key === 'Enter') { const f = $('#grid .card'); if (f) openDoc(f.dataset.id); }
     if (e.key === '?') $('#help').hidden = false;
+    if (e.key === 'm' || e.key === 'M') openMap();
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1147,3 +1150,263 @@ setTheme(S.theme);
 relocateTabs();
 syncDragZone();
 loadLibrary().then(() => send('ready'));
+
+/* ═══════════════════════════  MAP  ═══════════════════════════
+   A force-directed map of the library: which documents are linked by
+   something you wrote, and which cover the same ground. Written from
+   scratch — Obsidian is closed source and Logseq is AGPL-3.0, so neither
+   could contribute code here.
+   ═══════════════════════════════════════════════════════════════════ */
+const G = {
+  nodes: [], edges: [], mode: 'all',
+  tx: 0, ty: 0, scale: 1, alpha: 0, raf: 0,
+  hover: null, drag: null, panning: false, px: 0, py: 0, loaded: false
+};
+
+function subjectColour(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 62% 58%)`;
+}
+
+async function openMap(rebuild = false) {
+  showScreen('graph');
+  const load = $('#graphLoading');
+  if (!G.loaded || rebuild) {
+    load.hidden = false;
+    for (;;) {
+      const r = await fetch('/api/graph' + (rebuild ? '?rebuild=1' : ''));
+      const d = await r.json();
+      if (d.ready) { ingest(d); break; }
+      $('#graphProgress').textContent =
+        d.total ? `${d.progress} of ${d.total} documents` : 'starting…';
+      rebuild = false;
+      await new Promise(res => setTimeout(res, 700));
+    }
+    load.hidden = true;
+  }
+  sizeCanvas();
+  fit(260);            // settle first so the opening view frames everything
+  G.alpha = 0.35;
+  tick();
+}
+
+function ingest(d) {
+  const cx = 0, cy = 0;
+  G.nodes = d.nodes.map((n, i) => {
+    const a = (i / d.nodes.length) * Math.PI * 2;
+    const r = 180 + (i % 7) * 26;
+    return { ...n, x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, vx: 0, vy: 0,
+             rad: Math.max(6, Math.min(20, 5 + Math.sqrt(n.pages || 1) * 1.7)),
+             col: subjectColour(n.subject || '') };
+  });
+  const byId = Object.fromEntries(G.nodes.map(n => [n.id, n]));
+  G.edges = d.edges.map(e => ({ ...e, s: byId[e.a], t: byId[e.b] }))
+                   .filter(e => e.s && e.t);
+  G.loaded = true;
+
+  const subjects = [...new Set(G.nodes.map(n => n.subject))].sort();
+  $('#graphLegend').innerHTML = subjects.map(sub =>
+    `<span><i style="background:${subjectColour(sub)}"></i>${esc(sub)}</span>`).join('');
+  const links = G.edges.filter(e => e.kind === 'link').length;
+  $('#graphSub').textContent =
+    `${G.nodes.length} documents · ${G.edges.length - links} shared-topic links · ${links} written links`;
+}
+
+function activeEdges() {
+  return G.mode === 'link' ? G.edges.filter(e => e.kind === 'link') : G.edges;
+}
+
+function step() {
+  const nodes = G.nodes, edges = activeEdges();
+  const k = 0.0016;
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) { d2 = 1; dx = Math.random() - 0.5; dy = Math.random() - 0.5; }
+      const f = 5200 / d2;                       // repulsion
+      const d = Math.sqrt(d2);
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+    }
+    a.vx -= a.x * k;                              // gentle pull to centre
+    a.vy -= a.y * k;
+  }
+  for (const e of edges) {
+    const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y;
+    const d = Math.max(1, Math.hypot(dx, dy));
+    const rest = e.kind === 'link' ? 90 : 150;
+    const f = (d - rest) * 0.0032 * (e.kind === 'link' ? 1.6 : e.w);
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    e.s.vx += fx; e.s.vy += fy; e.t.vx -= fx; e.t.vy -= fy;
+  }
+  for (const n of nodes) {
+    if (n === G.drag) { n.vx = n.vy = 0; continue; }
+    n.vx *= 0.86; n.vy *= 0.86;
+    n.x += n.vx * G.alpha; n.y += n.vy * G.alpha;
+  }
+  G.alpha = Math.max(0, G.alpha - 0.004);
+}
+
+function sizeCanvas() {
+  const cv = $('#graphCanvas');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  cv.width = Math.max(1, Math.round(r.width * dpr));
+  cv.height = Math.max(1, Math.round(r.height * dpr));
+  G.dpr = dpr; G.w = r.width; G.h = r.height;
+}
+
+/// Settle the layout headlessly, then frame the whole map in the viewport.
+function fit(settle = 0) {
+  if (!G.nodes.length) return;
+  const keep = G.alpha;
+  G.alpha = 1;
+  for (let i = 0; i < settle; i++) step();
+  G.alpha = keep;
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of G.nodes) {
+    x0 = Math.min(x0, n.x - n.rad); x1 = Math.max(x1, n.x + n.rad);
+    y0 = Math.min(y0, n.y - n.rad); y1 = Math.max(y1, n.y + n.rad);
+  }
+  const pad = 70, lw = Math.max(1, x1 - x0), lh = Math.max(1, y1 - y0);
+  G.scale = clamp(Math.min((G.w - pad * 2) / lw, (G.h - pad * 2 - 40) / lh), 0.25, 1.6);
+  G.tx = -((x0 + x1) / 2) * G.scale;
+  G.ty = -((y0 + y1) / 2) * G.scale;
+}
+
+function draw() {
+  const cv = $('#graphCanvas');
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(G.dpr, 0, 0, G.dpr, 0, 0);
+  ctx.clearRect(0, 0, G.w, G.h);
+  ctx.save();
+  ctx.translate(G.w / 2 + G.tx, G.h / 2 + G.ty);
+  ctx.scale(G.scale, G.scale);
+
+  const hov = G.hover;
+  const near = hov ? new Set(activeEdges().flatMap(e =>
+    e.s === hov ? [e.t.id] : e.t === hov ? [e.s.id] : [])) : null;
+
+  for (const e of activeEdges()) {
+    const lit = hov && (e.s === hov || e.t === hov);
+    ctx.strokeStyle = e.kind === 'link'
+      ? `rgba(10,132,255,${lit ? .95 : .5})`
+      : `rgba(255,255,255,${lit ? .5 : 0.06 + e.w * 0.16})`;
+    ctx.lineWidth = (e.kind === 'link' ? 1.6 : 0.8 + e.w * 1.6) / G.scale;
+    ctx.beginPath();
+    ctx.moveTo(e.s.x, e.s.y);
+    ctx.lineTo(e.t.x, e.t.y);
+    ctx.stroke();
+  }
+
+  for (const n of G.nodes) {
+    const dim = hov && n !== hov && !near.has(n.id);
+    ctx.globalAlpha = dim ? 0.25 : 1;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.rad, 0, Math.PI * 2);
+    ctx.fillStyle = n.col;
+    ctx.fill();
+    if (n.notes) {
+      ctx.lineWidth = 2 / G.scale;
+      ctx.strokeStyle = '#ffd426';
+      ctx.stroke();
+    }
+    if (n === hov || G.scale > 0.85 || n.rad > 13) {
+      ctx.globalAlpha = dim ? 0.25 : 1;
+      ctx.fillStyle = '#f2f2f5';
+      ctx.font = `${n === hov ? 600 : 400} ${11 / G.scale}px -apple-system, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name,
+                   n.x, n.y + n.rad + 12 / G.scale);
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function tick() {
+  cancelAnimationFrame(G.raf);
+  const run = () => {
+    if (G.alpha > 0.002 || G.drag) step();
+    draw();
+    G.raf = requestAnimationFrame(run);
+  };
+  G.raf = requestAnimationFrame(run);
+}
+
+function toGraph(ev) {
+  const r = $('#graphCanvas').getBoundingClientRect();
+  return {
+    x: (ev.clientX - r.left - G.w / 2 - G.tx) / G.scale,
+    y: (ev.clientY - r.top - G.h / 2 - G.ty) / G.scale
+  };
+}
+function nodeAt(p) {
+  for (let i = G.nodes.length - 1; i >= 0; i--) {
+    const n = G.nodes[i];
+    if (Math.hypot(n.x - p.x, n.y - p.y) <= n.rad + 5) return n;
+  }
+  return null;
+}
+
+const gcv = $('#graphCanvas');
+gcv.addEventListener('mousemove', e => {
+  const p = toGraph(e);
+  if (G.drag) { G.drag.x = p.x; G.drag.y = p.y; G.alpha = Math.max(G.alpha, 0.28); return; }
+  if (G.panning) {
+    G.tx += e.clientX - G.px; G.ty += e.clientY - G.py;
+    G.px = e.clientX; G.py = e.clientY;
+    return;
+  }
+  const n = nodeAt(p);
+  G.hover = n;
+  const tip = $('#graphTip');
+  if (n) {
+    tip.hidden = false;
+    tip.innerHTML = `<b>${esc(n.name)}</b><div class="meta">${esc(n.subject)} · ${n.ext.toUpperCase()}`
+      + `${n.pages ? ' · ' + n.pages + ' pages' : ''}${n.notes ? ' · ✎ ' + n.notes : ''}</div>`
+      + (n.terms?.length ? `<div class="terms">${n.terms.map(esc).join(' · ')}</div>` : '');
+    const r = gcv.getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - r.left + 14, r.width - 260) + 'px';
+    tip.style.top = Math.min(e.clientY - r.top + 14, r.height - 90) + 'px';
+  } else tip.hidden = true;
+});
+gcv.addEventListener('mousedown', e => {
+  const n = nodeAt(toGraph(e));
+  if (n) { G.drag = n; }
+  else { G.panning = true; G.px = e.clientX; G.py = e.clientY; gcv.classList.add('dragging'); }
+});
+addEventListener('mouseup', () => {
+  G.drag = null; G.panning = false; gcv.classList.remove('dragging');
+});
+gcv.addEventListener('dblclick', () => { fit(60); });
+gcv.addEventListener('click', e => {
+  const n = nodeAt(toGraph(e));
+  if (n) openDoc(n.id);
+});
+gcv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = toGraph(e);
+  G.scale = clamp(G.scale * (e.deltaY < 0 ? 1.1 : 0.9), 0.25, 3);
+  const after = toGraph(e);
+  G.tx += (after.x - before.x) * G.scale;
+  G.ty += (after.y - before.y) * G.scale;
+}, { passive: false });
+
+$('#mapBtn').onclick = () => openMap();
+$('#graphBack').onclick = () => toLibrary();
+$('#graphRebuild').onclick = () => { G.loaded = false; openMap(true); };
+$('#graphMode').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  G.mode = b.dataset.mode;
+  $$('#graphMode button').forEach(x => x.classList.toggle('on', x === b));
+  G.alpha = 0.7;
+});
+new ResizeObserver(() => { if (!$('#graph').hidden) sizeCanvas(); }).observe($('#graph'));
+COMMANDS.map = () => openMap();
+COMMANDS.fitMap = () => fit(60);

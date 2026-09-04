@@ -44,6 +44,10 @@
         <h1 id="libTitle">All material</h1>
         <p id="libSub" class="sub">Scanning…</p>
       </div>
+      <button id="mapBtn" class="btn map-btn" title="Map of your material (M)">
+        <svg viewBox="0 0 16 16" width="13" height="13"><circle cx="4" cy="4" r="2" fill="currentColor"/><circle cx="12" cy="6" r="1.6" fill="currentColor"/><circle cx="7" cy="12" r="1.8" fill="currentColor"/><path stroke="currentColor" stroke-width="1.1" fill="none" d="M5.6 5 10.6 5.7M5 5.8 6.4 10.2M8.6 10.9 11.2 7.4"/></svg>
+        Map
+      </button>
       <div class="lib-search">
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm3.4-1.1 3.1 3.1"/></svg>
         <input id="libFilter" type="search" placeholder="Filter" spellcheck="false">
@@ -173,6 +177,31 @@
   </div>
 
 </div>
+
+  <!-- ─────────────────────────  MAP  ───────────────────────── -->
+  <div id="graph" class="screen" hidden>
+    <div class="graph-bar">
+      <button id="graphBack" class="icon-btn" title="Library (Esc)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9.5 3.5 5 8l4.5 4.5"/></svg>
+      </button>
+      <div class="graph-title">Map of your material<span id="graphSub" class="graph-sub"></span></div>
+      <div class="seg" id="graphMode">
+        <button data-mode="all" class="on">All links</button>
+        <button data-mode="link">Written links</button>
+      </div>
+      <button id="graphRebuild" class="btn" title="Recompute from scratch">Rebuild</button>
+    </div>
+    <div class="graph-stage">
+      <canvas id="graphCanvas"></canvas>
+      <div id="graphTip" class="graph-tip" hidden></div>
+      <div id="graphLoading" class="graph-loading">
+        <div class="spinner"></div>
+        <div class="loading-text">Reading your material…</div>
+        <div id="graphProgress" class="loading-sub"></div>
+      </div>
+      <div id="graphLegend" class="graph-legend"></div>
+    </div>
+  </div>
 
 </div><!-- /#screens -->
 

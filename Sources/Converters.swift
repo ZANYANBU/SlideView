@@ -14,6 +14,117 @@ enum Converters {
         return doc.write(to: out)
     }
 
+    // MARK: Word / RTF / ODT / HTML — natively, no LibreOffice.
+
+    private static let attributedTypes: [String: NSAttributedString.DocumentType] = [
+        "docx": .officeOpenXML, "doc": .docFormat, "odt": .openDocument,
+        "rtf": .rtf, "rtfd": .rtfd, "html": .html, "htm": .html, "webarchive": .webArchive]
+
+    static func handlesNatively(_ ext: String) -> Bool { attributedTypes[ext] != nil }
+
+    /// Drawn through NSLayoutManager rather than round-tripping to HTML, so
+    /// embedded images (which are NSTextAttachments) survive. Roughly 30x
+    /// faster than shelling out to LibreOffice, and needs nothing installed.
+    static func attributedPDF(_ url: URL, to out: URL) -> Bool {
+        guard let type = attributedTypes[url.pathExtension.lowercased()],
+              let text = try? NSAttributedString(url: url,
+                                                 options: [.documentType: type],
+                                                 documentAttributes: nil),
+              text.length > 0 else { return false }
+
+        let page = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let inset: CGFloat = 56
+        let textSize = CGSize(width: page.width - inset * 2, height: page.height - inset * 2)
+
+        let storage = NSTextStorage(attributedString: text)
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+
+        let data = NSMutableData()
+        var box = page
+        guard let consumer = CGDataConsumer(data: data),
+              let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) else { return false }
+
+        var glyph = 0, pages = 0
+        while glyph < layout.numberOfGlyphs && pages < 800 {
+            let container = NSTextContainer(size: textSize)
+            container.lineFragmentPadding = 0
+            layout.addTextContainer(container)
+            let range = layout.glyphRange(for: container)
+            if range.length == 0 { break }
+
+            ctx.beginPDFPage(nil)
+            ctx.saveGState()
+            ctx.translateBy(x: inset, y: page.height - inset)
+            ctx.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            layout.drawBackground(forGlyphRange: range, at: .zero)
+            layout.drawGlyphs(forGlyphRange: range, at: .zero)
+            NSGraphicsContext.restoreGraphicsState()
+            ctx.restoreGState()
+            ctx.endPDFPage()
+
+            glyph = NSMaxRange(range)
+            pages += 1
+        }
+        ctx.closePDF()
+        return pages > 0 && data.write(to: out, atomically: true)
+    }
+
+    // MARK: CSV / TSV — parsed here rather than handed to a spreadsheet engine.
+
+    static func tableHTML(_ url: URL, text: String) -> String {
+        let sep: Character = url.pathExtension.lowercased() == "tsv" ? "\t" : ","
+        let rows = parseDelimited(text, sep: sep)
+        var body = "<div class=\"fname\">\(Markdown.escape(url.lastPathComponent))</div>\n"
+        guard !rows.isEmpty else { return Markdown.page(title: url.lastPathComponent, body: body + "<p>Empty file.</p>") }
+
+        body += "<table><thead><tr>"
+        body += rows[0].map { "<th>\(Markdown.escape($0))</th>" }.joined()
+        body += "</tr></thead><tbody>\n"
+        for r in rows.dropFirst().prefix(4000) {
+            body += "<tr>" + r.map { "<td>\(Markdown.escape($0))</td>" }.joined() + "</tr>\n"
+        }
+        body += "</tbody></table>\n"
+        if rows.count > 4001 {
+            body += "<p><em>Showing the first 4000 of \(rows.count - 1) rows.</em></p>"
+        }
+        return Markdown.page(title: url.deletingPathExtension().lastPathComponent, body: body)
+    }
+
+    /// Minimal RFC-4180 reader: quoted fields, doubled quotes, embedded newlines.
+    private static func parseDelimited(_ text: String, sep: Character) -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var quoted = false
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            if quoted {
+                if c == "\"" {
+                    let n = text.index(after: i)
+                    if n < text.endIndex, text[n] == "\"" { field.append("\""); i = n }
+                    else { quoted = false }
+                } else { field.append(c) }
+            } else {
+                switch c {
+                case "\"": quoted = true
+                case sep: row.append(field); field = ""
+                case "\n":
+                    row.append(field); field = ""
+                    rows.append(row); row = []
+                case "\r": break
+                default: field.append(c)
+                }
+            }
+            i = text.index(after: i)
+        }
+        if !field.isEmpty || !row.isEmpty { row.append(field); rows.append(row) }
+        return rows.filter { !($0.count == 1 && $0[0].isEmpty) }
+    }
+
     // MARK: Plain text and source code — a numbered, wrapping listing.
 
     static func textHTML(_ url: URL, text: String) -> String {
