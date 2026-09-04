@@ -36,6 +36,13 @@ final class GraphBuilder {
         "shall","must","may","per","via","etc","fig","figure","table","page","slide","chapter",
         "unit","example","examples","given","above","below","following","note","notes"]
 
+    /// Drop the cached map — the set of documents just changed underneath it.
+    func invalidate() {
+        lock.lock()
+        built = nil
+        lock.unlock()
+    }
+
     func status() -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
         if let built { return built }

@@ -18,12 +18,16 @@ invert, Google Lens and Gemini.
 | Spreadsheets | `csv` `tsv` · `xlsx` `xls` `ods` `numbers` | in-process · LibreOffice |
 | Notes | `md` `markdown` `rmd` `txt` `tex` `org` `rst` | in-process |
 | Notebooks | `ipynb` | in-process |
-| Images | `png` `jpg` `jpeg` `heic` `heif` `gif` `webp` `tiff` `bmp` | PDFKit |
+| Images | `png` `jpg` `jpeg` `heic` `heif` `gif` `webp` `tiff` `bmp` | PDFKit — **off by default**, see below |
 | Code | `swift` `py` `c` `cpp` `java` `js` `ts` `json` `yaml` `sql` … | in-process |
 
 Jupyter notebooks keep their structure: markdown cells, `In [n]` prompts, code
 cells, stream and error output, and inline plots (decoded from the notebook's
 own base64, so no kernel is needed).
+
+**Images are excluded from scanning by default**, behind *Include images* in the
+sidebar. A folder of study material almost always also holds screenshots, scans
+and ID photos, and indexing those buries the decks. They stay openable on demand.
 
 **Code and config files are opened on demand but never scanned.** Indexing every
 `.js` and `.json` under a project folder would bury the actual material — so the
@@ -45,7 +49,13 @@ everything you study from. Two kinds of edge:
 
 Signatures are cached per converted PDF, so the map is only expensive the first
 time. Hover a node for its top terms, click to open it, drag to rearrange,
-scroll to zoom, double-click to reframe.
+scroll or pinch to zoom, double-click to reframe. `F` searches, `+` `−` `0` zoom.
+
+It is built to stay usable at a few hundred documents: labels are placed in
+screen space with collision rejection (and capped) rather than drawn for every
+node, repulsion uses a distance cutoff so the layout does not crawl, the subject
+legend hides behind a button, and a click only opens a document if the pointer
+did not move — dragging a node used to open it by accident.
 
 ## Prior art, and why none of it is vendored
 

@@ -247,6 +247,7 @@ let pollTimer = null;
 async function loadLibrary() {
   const r = await fetch('/api/library');
   S.lib = await r.json();
+  $('#optImages').checked = !!S.lib.scanImages;
   renderRoots();
   renderSidebar();
   renderGrid();
@@ -874,6 +875,12 @@ $('#subjectNav').addEventListener('click', e => {
   S.subject = it.dataset.sub; renderSidebar(); renderGrid();
 });
 $('#libFilter').addEventListener('input', e => { S.filter = e.target.value; renderGrid(); });
+$('#optImages').addEventListener('change', async e => {
+  await fetch('/api/settings?images=' + (e.target.checked ? '1' : '0'));
+  G.loaded = false;                       // the map's node set just changed
+  toast(e.target.checked ? 'Including images' : 'Images excluded');
+  loadLibrary();
+});
 $('#addRootBtn').onclick = () => send('chooseRoot');
 $('#emptyChoose').onclick = () => send('chooseRoot');
 $('#rootList').addEventListener('click', e => {
@@ -1140,7 +1147,7 @@ window.sv = {
     relocateTabs();
     if (S.pdf) show(S.page, false);
   },
-  rootChanged() { S.subject = 'all'; loadLibrary(); },
+  rootChanged() { S.subject = 'all'; G.loaded = false; loadLibrary(); },
   newTab() { toLibrary(); },
   closeTab() { if (cur) closeTab(cur); },
   toast(msg) { toast(msg); }
@@ -1158,9 +1165,11 @@ loadLibrary().then(() => send('ready'));
    could contribute code here.
    ═══════════════════════════════════════════════════════════════════ */
 const G = {
-  nodes: [], edges: [], mode: 'all',
+  nodes: [], edges: [], mode: 'all', find: '',
   tx: 0, ty: 0, scale: 1, alpha: 0, raf: 0,
-  hover: null, drag: null, panning: false, px: 0, py: 0, loaded: false
+  hover: null, drag: null, panning: false,
+  px: 0, py: 0, downX: 0, downY: 0, moved: false,
+  loaded: false, w: 1, h: 1, dpr: 1
 };
 
 function subjectColour(name) {
@@ -1186,67 +1195,76 @@ async function openMap(rebuild = false) {
     load.hidden = true;
   }
   sizeCanvas();
-  fit(260);            // settle first so the opening view frames everything
-  G.alpha = 0.35;
+  fit(300);
+  G.alpha = 0.3;
   tick();
 }
 
 function ingest(d) {
-  const cx = 0, cy = 0;
   G.nodes = d.nodes.map((n, i) => {
     const a = (i / d.nodes.length) * Math.PI * 2;
-    const r = 180 + (i % 7) * 26;
-    return { ...n, x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, vx: 0, vy: 0,
-             rad: Math.max(6, Math.min(20, 5 + Math.sqrt(n.pages || 1) * 1.7)),
+    const r = 200 + (i % 9) * 30;
+    return { ...n, x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0, deg: 0,
+             rad: Math.max(5, Math.min(18, 4.5 + Math.sqrt(n.pages || 1) * 1.6)),
              col: subjectColour(n.subject || '') };
   });
   const byId = Object.fromEntries(G.nodes.map(n => [n.id, n]));
-  G.edges = d.edges.map(e => ({ ...e, s: byId[e.a], t: byId[e.b] }))
-                   .filter(e => e.s && e.t);
+  G.edges = d.edges.map(e => ({ ...e, s: byId[e.a], t: byId[e.b] })).filter(e => e.s && e.t);
+  for (const e of G.edges) { e.s.deg++; e.t.deg++; }
   G.loaded = true;
 
-  const subjects = [...new Set(G.nodes.map(n => n.subject))].sort();
-  $('#graphLegend').innerHTML = subjects.map(sub =>
-    `<span><i style="background:${subjectColour(sub)}"></i>${esc(sub)}</span>`).join('');
+  const counts = {};
+  for (const n of G.nodes) counts[n.subject] = (counts[n.subject] || 0) + 1;
+  $('#graphLegend').innerHTML = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([sub, c]) =>
+      `<div class="row"><i style="background:${subjectColour(sub)}"></i>${esc(sub)}<span class="n">${c}</span></div>`)
+    .join('');
+
   const links = G.edges.filter(e => e.kind === 'link').length;
   $('#graphSub').textContent =
-    `${G.nodes.length} documents · ${G.edges.length - links} shared-topic links · ${links} written links`;
+    `${G.nodes.length} documents · ${G.edges.length - links} shared-topic · ${links} written`;
 }
 
 function activeEdges() {
   return G.mode === 'link' ? G.edges.filter(e => e.kind === 'link') : G.edges;
 }
 
+/* ── layout ─────────────────────────────────────────────────── */
 function step() {
   const nodes = G.nodes, edges = activeEdges();
-  const k = 0.0016;
-  for (let i = 0; i < nodes.length; i++) {
+  const n = nodes.length;
+  // Repulsion falls off past a cutoff: at 100+ nodes the all-pairs term is what
+  // makes the layout crawl, and distant pairs contribute almost nothing.
+  const cutoff = 420, cut2 = cutoff * cutoff;
+  for (let i = 0; i < n; i++) {
     const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j++) {
+    for (let j = i + 1; j < n; j++) {
       const b = nodes[j];
       let dx = b.x - a.x, dy = b.y - a.y;
       let d2 = dx * dx + dy * dy;
+      if (d2 > cut2) continue;
       if (d2 < 1) { d2 = 1; dx = Math.random() - 0.5; dy = Math.random() - 0.5; }
-      const f = 5200 / d2;                       // repulsion
       const d = Math.sqrt(d2);
+      const f = 6000 / d2;
       const fx = (dx / d) * f, fy = (dy / d) * f;
       a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
     }
-    a.vx -= a.x * k;                              // gentle pull to centre
-    a.vy -= a.y * k;
+    a.vx -= a.x * 0.0018;
+    a.vy -= a.y * 0.0018;
   }
   for (const e of edges) {
     const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y;
     const d = Math.max(1, Math.hypot(dx, dy));
-    const rest = e.kind === 'link' ? 90 : 150;
+    const rest = e.kind === 'link' ? 95 : 165;
     const f = (d - rest) * 0.0032 * (e.kind === 'link' ? 1.6 : e.w);
     const fx = (dx / d) * f, fy = (dy / d) * f;
     e.s.vx += fx; e.s.vy += fy; e.t.vx -= fx; e.t.vy -= fy;
   }
-  for (const n of nodes) {
-    if (n === G.drag) { n.vx = n.vy = 0; continue; }
-    n.vx *= 0.86; n.vy *= 0.86;
-    n.x += n.vx * G.alpha; n.y += n.vy * G.alpha;
+  for (const nd of nodes) {
+    if (nd === G.drag) { nd.vx = nd.vy = 0; continue; }
+    nd.vx *= 0.86; nd.vy *= 0.86;
+    nd.x += nd.vx * G.alpha; nd.y += nd.vy * G.alpha;
   }
   G.alpha = Math.max(0, G.alpha - 0.004);
 }
@@ -1260,7 +1278,6 @@ function sizeCanvas() {
   G.dpr = dpr; G.w = r.width; G.h = r.height;
 }
 
-/// Settle the layout headlessly, then frame the whole map in the viewport.
 function fit(settle = 0) {
   if (!G.nodes.length) return;
   const keep = G.alpha;
@@ -1273,15 +1290,25 @@ function fit(settle = 0) {
     x0 = Math.min(x0, n.x - n.rad); x1 = Math.max(x1, n.x + n.rad);
     y0 = Math.min(y0, n.y - n.rad); y1 = Math.max(y1, n.y + n.rad);
   }
-  const pad = 70, lw = Math.max(1, x1 - x0), lh = Math.max(1, y1 - y0);
-  G.scale = clamp(Math.min((G.w - pad * 2) / lw, (G.h - pad * 2 - 40) / lh), 0.25, 1.6);
+  const pad = 80, lw = Math.max(1, x1 - x0), lh = Math.max(1, y1 - y0);
+  setScale(clamp(Math.min((G.w - pad * 2) / lw, (G.h - pad * 2) / lh), 0.12, 1.6));
   G.tx = -((x0 + x1) / 2) * G.scale;
   G.ty = -((y0 + y1) / 2) * G.scale;
 }
 
+function setScale(v) {
+  G.scale = clamp(v, 0.12, 8);
+  $('#gZoomLabel').textContent = Math.round(G.scale * 100) + '%';
+}
+
+/* ── drawing ────────────────────────────────────────────────── */
+function matches(n) {
+  return G.find && (n.name.toLowerCase().includes(G.find) ||
+                    (n.subject || '').toLowerCase().includes(G.find));
+}
+
 function draw() {
-  const cv = $('#graphCanvas');
-  const ctx = cv.getContext('2d');
+  const ctx = $('#graphCanvas').getContext('2d');
   ctx.setTransform(G.dpr, 0, 0, G.dpr, 0, 0);
   ctx.clearRect(0, 0, G.w, G.h);
   ctx.save();
@@ -1291,13 +1318,14 @@ function draw() {
   const hov = G.hover;
   const near = hov ? new Set(activeEdges().flatMap(e =>
     e.s === hov ? [e.t.id] : e.t === hov ? [e.s.id] : [])) : null;
+  const finding = !!G.find;
 
   for (const e of activeEdges()) {
     const lit = hov && (e.s === hov || e.t === hov);
-    ctx.strokeStyle = e.kind === 'link'
-      ? `rgba(10,132,255,${lit ? .95 : .5})`
-      : `rgba(255,255,255,${lit ? .5 : 0.06 + e.w * 0.16})`;
-    ctx.lineWidth = (e.kind === 'link' ? 1.6 : 0.8 + e.w * 1.6) / G.scale;
+    if (hov && !lit) ctx.strokeStyle = 'rgba(255,255,255,.035)';
+    else if (e.kind === 'link') ctx.strokeStyle = `rgba(10,132,255,${lit ? .95 : .55})`;
+    else ctx.strokeStyle = `rgba(255,255,255,${lit ? .5 : 0.05 + e.w * 0.14})`;
+    ctx.lineWidth = (e.kind === 'link' ? 1.6 : 0.7 + e.w * 1.5) / G.scale;
     ctx.beginPath();
     ctx.moveTo(e.s.x, e.s.y);
     ctx.lineTo(e.t.x, e.t.y);
@@ -1305,28 +1333,67 @@ function draw() {
   }
 
   for (const n of G.nodes) {
-    const dim = hov && n !== hov && !near.has(n.id);
-    ctx.globalAlpha = dim ? 0.25 : 1;
+    const dim = (hov && n !== hov && !near.has(n.id)) || (finding && !matches(n));
+    ctx.globalAlpha = dim ? 0.16 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.rad, 0, Math.PI * 2);
     ctx.fillStyle = n.col;
     ctx.fill();
-    if (n.notes) {
+    if (finding && matches(n)) {
+      ctx.lineWidth = 2.5 / G.scale;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+    } else if (n.notes) {
       ctx.lineWidth = 2 / G.scale;
       ctx.strokeStyle = '#ffd426';
       ctx.stroke();
     }
-    if (n === hov || G.scale > 0.85 || n.rad > 13) {
-      ctx.globalAlpha = dim ? 0.25 : 1;
-      ctx.fillStyle = '#f2f2f5';
-      ctx.font = `${n === hov ? 600 : 400} ${11 / G.scale}px -apple-system, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText(n.name.length > 26 ? n.name.slice(0, 25) + '…' : n.name,
-                   n.x, n.y + n.rad + 12 / G.scale);
-    }
   }
   ctx.globalAlpha = 1;
   ctx.restore();
+
+  drawLabels(ctx, hov, near);
+}
+
+/* Labels are placed in screen space with collision rejection, so a dense map
+   stays readable instead of turning into a wall of overlapping text. */
+function drawLabels(ctx, hov, near) {
+  const toScreen = n => ({
+    x: n.x * G.scale + G.w / 2 + G.tx,
+    y: n.y * G.scale + G.h / 2 + G.ty
+  });
+  const rank = n =>
+    (n === hov ? 1e9 : 0) + (near && near.has(n.id) ? 1e6 : 0) +
+    (matches(n) ? 1e5 : 0) + n.deg * 10 + n.rad;
+
+  const candidates = G.nodes
+    .filter(n => { const p = toScreen(n);
+                   return p.x > -80 && p.x < G.w + 80 && p.y > -40 && p.y < G.h + 40; })
+    .sort((a, b) => rank(b) - rank(a))
+    .slice(0, 60);
+
+  ctx.font = '11px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  const placed = [];
+  let drawn = 0;
+  for (const n of candidates) {
+    if (drawn >= 34 && n !== hov) break;
+    const p = toScreen(n);
+    const label = n.name.length > 24 ? n.name.slice(0, 23) + '…' : n.name;
+    const w = ctx.measureText(label).width;
+    const box = { x: p.x - w / 2 - 3, y: p.y + n.rad * G.scale + 2, w: w + 6, h: 14 };
+    if (placed.some(b => !(box.x + box.w < b.x || b.x + b.w < box.x ||
+                           box.y + box.h < b.y || b.y + b.h < box.y))) continue;
+    placed.push(box);
+    drawn++;
+    const dim = (hov && n !== hov && !near.has(n.id)) || (G.find && !matches(n));
+    ctx.globalAlpha = dim ? 0.25 : 1;
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+    ctx.fillStyle = n === hov ? '#fff' : '#e6e6ea';
+    ctx.fillText(label, p.x, box.y + 10.5);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function tick() {
@@ -1339,6 +1406,7 @@ function tick() {
   G.raf = requestAnimationFrame(run);
 }
 
+/* ── interaction ────────────────────────────────────────────── */
 function toGraph(ev) {
   const r = $('#graphCanvas').getBoundingClientRect();
   return {
@@ -1347,17 +1415,21 @@ function toGraph(ev) {
   };
 }
 function nodeAt(p) {
-  for (let i = G.nodes.length - 1; i >= 0; i--) {
-    const n = G.nodes[i];
-    if (Math.hypot(n.x - p.x, n.y - p.y) <= n.rad + 5) return n;
+  // Generous hit radius, and it must not shrink as you zoom out.
+  const slack = 8 / G.scale;
+  let best = null, bestD = Infinity;
+  for (const n of G.nodes) {
+    const d = Math.hypot(n.x - p.x, n.y - p.y);
+    if (d <= n.rad + slack && d < bestD) { best = n; bestD = d; }
   }
-  return null;
+  return best;
 }
 
 const gcv = $('#graphCanvas');
 gcv.addEventListener('mousemove', e => {
+  if (Math.hypot(e.clientX - G.downX, e.clientY - G.downY) > 4) G.moved = true;
   const p = toGraph(e);
-  if (G.drag) { G.drag.x = p.x; G.drag.y = p.y; G.alpha = Math.max(G.alpha, 0.28); return; }
+  if (G.drag) { G.drag.x = p.x; G.drag.y = p.y; G.alpha = Math.max(G.alpha, 0.25); return; }
   if (G.panning) {
     G.tx += e.clientX - G.px; G.ty += e.clientY - G.py;
     G.px = e.clientX; G.py = e.clientY;
@@ -1372,31 +1444,58 @@ gcv.addEventListener('mousemove', e => {
       + `${n.pages ? ' · ' + n.pages + ' pages' : ''}${n.notes ? ' · ✎ ' + n.notes : ''}</div>`
       + (n.terms?.length ? `<div class="terms">${n.terms.map(esc).join(' · ')}</div>` : '');
     const r = gcv.getBoundingClientRect();
-    tip.style.left = Math.min(e.clientX - r.left + 14, r.width - 260) + 'px';
-    tip.style.top = Math.min(e.clientY - r.top + 14, r.height - 90) + 'px';
+    tip.style.left = Math.min(e.clientX - r.left + 16, r.width - 262) + 'px';
+    tip.style.top = Math.min(e.clientY - r.top + 16, r.height - 96) + 'px';
   } else tip.hidden = true;
 });
 gcv.addEventListener('mousedown', e => {
+  G.downX = e.clientX; G.downY = e.clientY; G.moved = false;
   const n = nodeAt(toGraph(e));
-  if (n) { G.drag = n; }
+  if (n) G.drag = n;
   else { G.panning = true; G.px = e.clientX; G.py = e.clientY; gcv.classList.add('dragging'); }
 });
 addEventListener('mouseup', () => {
   G.drag = null; G.panning = false; gcv.classList.remove('dragging');
 });
-gcv.addEventListener('dblclick', () => { fit(60); });
+// Only a genuine click opens a document — dragging a node used to open it too.
 gcv.addEventListener('click', e => {
+  if (G.moved) return;
   const n = nodeAt(toGraph(e));
   if (n) openDoc(n.id);
 });
+gcv.addEventListener('dblclick', e => { e.preventDefault(); fit(60); });
+
+function zoomAt(cx, cy, factor) {
+  const r = gcv.getBoundingClientRect();
+  const gx = (cx - r.left - G.w / 2 - G.tx) / G.scale;
+  const gy = (cy - r.top - G.h / 2 - G.ty) / G.scale;
+  setScale(G.scale * factor);
+  G.tx = cx - r.left - G.w / 2 - gx * G.scale;
+  G.ty = cy - r.top - G.h / 2 - gy * G.scale;
+}
 gcv.addEventListener('wheel', e => {
   e.preventDefault();
-  const before = toGraph(e);
-  G.scale = clamp(G.scale * (e.deltaY < 0 ? 1.1 : 0.9), 0.25, 3);
-  const after = toGraph(e);
-  G.tx += (after.x - before.x) * G.scale;
-  G.ty += (after.y - before.y) * G.scale;
+  // Trackpad pinch arrives as ctrl+wheel; make it finer than a mouse wheel.
+  const f = e.ctrlKey ? Math.exp(-e.deltaY * 0.01) : Math.exp(-e.deltaY * 0.0022);
+  zoomAt(e.clientX, e.clientY, clamp(f, 0.5, 2));
 }, { passive: false });
+
+const zoomCentre = f => zoomAt(G.w / 2 + gcv.getBoundingClientRect().left,
+                               G.h / 2 + gcv.getBoundingClientRect().top, f);
+$('#gZoomIn').onclick = () => zoomCentre(1.3);
+$('#gZoomOut').onclick = () => zoomCentre(1 / 1.3);
+$('#gZoomLabel').onclick = () => { setScale(1); };
+$('#gFit').onclick = () => fit(40);
+$('#gLegendBtn').onclick = () => {
+  const el = $('#graphLegend');
+  el.hidden = !el.hidden;
+  $('#gLegendBtn').classList.toggle('on', !el.hidden);
+};
+$('#graphFind').addEventListener('input', e => { G.find = e.target.value.trim().toLowerCase(); });
+$('#graphFind').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Escape') { e.target.value = ''; G.find = ''; e.target.blur(); }
+});
 
 $('#mapBtn').onclick = () => openMap();
 $('#graphBack').onclick = () => toLibrary();
@@ -1407,6 +1506,15 @@ $('#graphMode').addEventListener('click', e => {
   $$('#graphMode button').forEach(x => x.classList.toggle('on', x === b));
   G.alpha = 0.7;
 });
+addEventListener('keydown', e => {
+  if ($('#graph').hidden) return;
+  const t = e.target.tagName;
+  if (t === 'INPUT' || t === 'TEXTAREA') return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomCentre(1.3); }
+  if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomCentre(1 / 1.3); }
+  if (e.key === '0') { e.preventDefault(); fit(40); }
+  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); $('#graphFind').focus(); }
+});
 new ResizeObserver(() => { if (!$('#graph').hidden) sizeCanvas(); }).observe($('#graph'));
 COMMANDS.map = () => openMap();
-COMMANDS.fitMap = () => fit(60);
+COMMANDS.fitMap = () => fit(40);

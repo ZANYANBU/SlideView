@@ -45,6 +45,7 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
             "root": lib.root.path,
             "rootName": lib.root.lastPathComponent,
             "roots": lib.roots.map { ["path": $0.path, "name": $0.lastPathComponent] },
+            "scanImages": Library.scanImages,
             "subjects": subjects.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
                 .map { ["name": $0, "docs": subjects[$0]!] }
         ]
@@ -82,6 +83,10 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
             return .json(["ok": true, "count": lib.noteCount(id)])
         }
         return .json(lib.notes(id))
+
+    case "/api/settings":
+        if let v = req.query["images"] { Library.scanImages = (v == "1") }
+        return .json(["scanImages": Library.scanImages])
 
     case "/api/graph":
         let g = GraphBuilder.shared
