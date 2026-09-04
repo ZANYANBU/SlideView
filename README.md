@@ -5,6 +5,46 @@ full-screen with a smart dark mode, built for long revision sessions.
 
 **Install:** `./build.sh` → `~/Applications/SlideView.app` (drag it to the Dock).
 
+## What it opens
+
+Everything is normalised to a PDF once, then cached — so every format gets the
+same treatment: thumbnails, filmstrip, tabs, text search, per-slide notes, smart
+invert, Google Lens and Gemini.
+
+| | Formats | Rendered by |
+|---|---|---|
+| Slides | `pptx` `ppt` `odp` `key` `pps` `ppsx` | LibreOffice |
+| Documents | `pdf` · `docx` `doc` `odt` `rtf` `pages` | direct · LibreOffice |
+| Spreadsheets | `xlsx` `xls` `ods` `numbers` `csv` `tsv` | LibreOffice |
+| Notes | `md` `markdown` `rmd` `txt` `tex` `org` `rst` | in-process |
+| Notebooks | `ipynb` | in-process |
+| Images | `png` `jpg` `jpeg` `heic` `heif` `gif` `webp` `tiff` `bmp` | PDFKit |
+| Code | `swift` `py` `c` `cpp` `java` `js` `ts` `json` `yaml` `sql` … | in-process |
+
+Jupyter notebooks keep their structure: markdown cells, `In [n]` prompts, code
+cells, stream and error output, and inline plots (decoded from the notebook's
+own base64, so no kernel is needed).
+
+**Code and config files are opened on demand but never scanned.** Indexing every
+`.js` and `.json` under a project folder would bury the actual material — so the
+library stays clean, while `⌘O`, drag-and-drop and Finder's *Open With* will open
+anything in the table above. Build and dependency directories (`node_modules`,
+`.git`, `venv`, `DerivedData`, `Pods`, `build`, …) are skipped when scanning.
+
+## macOS integration
+
+- **Open With** — SlideView registers for every type above, as an *alternate*
+  handler, so it never steals your existing defaults.
+- **Drag and drop** — drop files anywhere on the window to open them, or drop a
+  folder to add it to the library.
+- **Open Recent** in the File menu, backed by the system recents list.
+- **Full menu bar** — File, Edit, View (appearance, zen, zoom), Go (slides and
+  starred), Window (tabs) and Help.
+- Files opened from outside your library folders appear under *Opened files*.
+
+Menu shortcuts deliberately all carry ⌘, so the single-key shortcuts stay free
+for the viewer and cannot fire while you are typing a note.
+
 ## How it works
 
 - PowerPoint files are converted to PDF once by LibreOffice in the background,
@@ -136,7 +176,8 @@ paints — and the paginator reads `offsetTop`.
 
 ## Layout
 
-    Sources/    Swift — HTTP server, library scan, LibreOffice, Markdown, PDFKit, AppKit shell
+    Sources/    Swift — HTTP server, library scan, converters (LibreOffice,
+                Markdown, notebooks, code, images), AppKit shell
     web/        UI — index.html, app.css, app.js, vendored pdf.js
     Tools/      icon generator
     build.sh    compile + assemble the .app

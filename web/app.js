@@ -1086,8 +1086,50 @@ $('#grid').addEventListener('contextmenu', e => {
   if (c) slideMenu(e, c.dataset.id, 1);
 });
 
+/* Commands the native menu bar dispatches into the page. */
+const COMMANDS = {
+  next:      () => show(S.page + 1),
+  prev:      () => show(S.page - 1),
+  first:     () => show(1),
+  last:      () => show(S.total),
+  goto:      () => { $('#pageInput').focus(); $('#pageInput').select(); },
+  zen:       () => setZen(!document.body.classList.contains('zen')),
+  strip:     () => $('#stripBtn').click(),
+  notes:     () => toggleNotes(),
+  search:    () => { if (document.body.dataset.screen === 'viewer') openSearch(); else $('#libFilter').focus(); },
+  star:      () => toggleStar(),
+  starList:  () => openStars(),
+  nextStar:  () => jumpStar(1),
+  prevStar:  () => jumpStar(-1),
+  zoomIn:    () => setZoom(S.zoom * 1.25),
+  zoomOut:   () => setZoom(S.zoom / 1.25),
+  fit:       () => { S.fitMode = 'fit'; setZoom(1); },
+  fitWidth:  () => { S.fitMode = 'width'; setZoom(1); },
+  newTab:    () => toLibrary(),
+  closeTab:  () => { if (cur) closeTab(cur); },
+  nextTab:   () => cycleTab(1),
+  prevTab:   () => cycleTab(-1),
+  library:   () => toLibrary(),
+  exportNotes: () => exportNotes(),
+  reveal:    () => { if (S.doc) send('reveal', { id: S.doc.id }); },
+  rescan:    () => { loadLibrary(); toast('Rescanned'); },
+  help:      () => { $('#help').hidden = false; }
+};
+
 /* native bridge */
 window.sv = {
+  cmd(name) {
+    if (name.startsWith('theme:')) return setTheme(name.slice(6));
+    const fn = COMMANDS[name];
+    if (fn) fn();
+  },
+  /* Files opened from Finder, dropped on the window, or picked with ⌘O. */
+  async openPaths(ids) {
+    await loadLibrary();
+    for (let i = 0; i < ids.length; i++) {
+      await openDoc(ids[i], { background: i > 0 });
+    }
+  },
   fullScreen(on) {
     S.fs = on;
     document.body.classList.toggle('fs', on);
@@ -1104,4 +1146,4 @@ window.sv = {
 setTheme(S.theme);
 relocateTabs();
 syncDragZone();
-loadLibrary();
+loadLibrary().then(() => send('ready'));
