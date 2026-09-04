@@ -33,7 +33,8 @@
     </div>
     <nav id="subjectNav" class="subject-nav"></nav>
     <div class="sidebar-foot">
-      <div class="kbd-row"><kbd>↵</kbd><span>Open</span></div>
+      <label class="opt"><input type="checkbox" id="optImages"><span>Include images</span></label>
+      <div class="kbd-row"><kbd>M</kbd><span>Map</span></div>
       <div class="kbd-row"><kbd>⌘R</kbd><span>Rescan</span></div>
     </div>
   </aside>
@@ -199,7 +200,18 @@
         <div class="loading-text">Reading your material…</div>
         <div id="graphProgress" class="loading-sub"></div>
       </div>
-      <div id="graphLegend" class="graph-legend"></div>
+      <div id="graphLegend" class="graph-legend" hidden></div>
+
+      <input id="graphFind" class="graph-find" type="search" placeholder="Find in map" spellcheck="false">
+
+      <div class="graph-hud">
+        <button id="gZoomOut" title="Zoom out (−)">−</button>
+        <button id="gZoomLabel" title="Reset zoom">100%</button>
+        <button id="gZoomIn" title="Zoom in (+)">+</button>
+        <span class="hud-sep"></span>
+        <button id="gFit" title="Fit everything (0)">Fit</button>
+        <button id="gLegendBtn" title="Subjects">Subjects</button>
+      </div>
     </div>
   </div>
 

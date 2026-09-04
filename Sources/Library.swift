@@ -67,9 +67,22 @@ final class Library {
         "__pycache__", "Pods", "DerivedData", ".next", ".nuxt", "vendor", "coverage",
         ".cache", ".gradle", "bin", "obj", "SlideView"]
 
+    /// Images are excluded by default: a material folder usually also contains
+    /// screenshots, scans and ID photos, and indexing them buries the decks.
+    /// They stay openable on demand via ⌘O, Finder and drag-and-drop.
+    static var scanImages: Bool {
+        get { UserDefaults.standard.bool(forKey: "scanImages") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "scanImages")
+            GraphBuilder.shared.invalidate()
+        }
+    }
+
     static var scanned: Set<String> {
-        native.union(office).union(attributed).union(table)
-              .union(markdown).union(image).union(notebook).union(plain)
+        var s = native.union(office).union(attributed).union(table)
+                      .union(markdown).union(notebook).union(plain)
+        if scanImages { s.formUnion(image) }
+        return s
     }
     static var openable: Set<String> { scanned.union(code) }
 
@@ -119,6 +132,7 @@ final class Library {
         let snapshot = roots
         lock.unlock()
         UserDefaults.standard.set(snapshot.map(\.path), forKey: "libraryRoots")
+        GraphBuilder.shared.invalidate()
     }
 
     func removeRoot(_ path: String) {
@@ -127,6 +141,7 @@ final class Library {
         let snapshot = roots
         lock.unlock()
         UserDefaults.standard.set(snapshot.map(\.path), forKey: "libraryRoots")
+        GraphBuilder.shared.invalidate()
     }
 
     // MARK: - Scanning
@@ -317,7 +332,31 @@ final class Library {
         }
     }
 
+    /// Office formats are ZIP containers. Checking that cheaply here avoids
+    /// launching LibreOffice (several seconds each) only for it to refuse a
+    /// truncated or machine-generated file.
+    private static let zipContainer: Set<String> = [
+        "docx", "xlsx", "pptx", "ppsx", "odp", "odt", "ods", "key", "numbers", "pages", "epub"]
+
+    private static func looksLikeZip(_ url: URL) -> Bool {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+              size > 100, let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fh.close() }
+        guard let head = try? fh.read(upToCount: 4),
+              head == Data([0x50, 0x4B, 0x03, 0x04]) else { return false }
+        let tailLen = min(size, 66_000)
+        try? fh.seek(toOffset: UInt64(size - tailLen))
+        guard let tail = try? fh.readToEnd() else { return false }
+        return tail.range(of: Data([0x50, 0x4B, 0x05, 0x06])) != nil   // end of central directory
+    }
+
     private func convertWithLibreOffice(_ doc: Doc, tmp: URL, out: URL) {
+        if Self.zipContainer.contains(doc.ext), !Self.looksLikeZip(doc.url) {
+            fail(doc, "This .\(doc.ext) file is not readable — it looks truncated or corrupt, "
+                    + "not a real \(doc.ext.uppercased()) document.")
+            return
+        }
+
         let soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
         guard FileManager.default.fileExists(atPath: soffice) else {
             fail(doc, """
@@ -353,7 +392,10 @@ final class Library {
             let produced = (try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil))?
                 .first { $0.pathExtension.lowercased() == "pdf" }
             guard let produced else {
-                fail(doc, "Conversion produced no PDF.\n\(log.suffix(400))")
+                let hint = log.contains("could not be loaded")
+                    ? "LibreOffice could not read this file — it may be corrupt or an unsupported variant."
+                    : "Conversion produced no PDF."
+                fail(doc, "\(hint)\n\n\(log.suffix(300))")
                 return
             }
             try? FileManager.default.removeItem(at: out)
