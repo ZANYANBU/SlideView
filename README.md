@@ -75,6 +75,27 @@ not: the smart-invert pass, the map, and every converter here are written from
 scratch. The only vendored third-party code is PDF.js (Apache 2.0), credited in
 [web/vendor/NOTICE.md](web/vendor/NOTICE.md).
 
+## Notepad
+
+`⌘N` creates a plain `.txt` note in any library folder and opens it in a simple
+full-window editor — type and it saves itself, `⌘S` forces a save. Add `.md` to
+the name to get a Markdown note instead.
+
+`.txt` files open straight into the editor rather than the formatted view;
+Markdown, CSV and code files open formatted with an **Edit** button (`E`) to
+switch. **Preview** flips back, re-rendering from what you just wrote.
+
+Notes stay ordinary files on disk — no database, no proprietary format — so they
+show up in the map alongside everything else and can be opened by anything.
+
+## Sharing
+
+**Share** opens the standard macOS share sheet (AirDrop, Mail, Messages, Notes),
+`⇧⌘S` anywhere, or right-click a slide for *Share…* / *Share as PDF…* — handy
+for sending a converted deck to someone who has no PowerPoint. **Copy** puts the
+note's text on the clipboard; *Copy File* puts the file itself there, so it can
+be pasted straight into Finder or a message.
+
 ## macOS integration
 
 - **Open With** — SlideView registers for every type above, as an *alternate*
@@ -164,6 +185,7 @@ Notes are keyed by page only — editing and re-converting a deck keeps them.
 `D` appearance · `F` full screen · `H` zen · `T` thumbnail rail · `+ −` zoom · `0` fit · `W` fit width
 `S` star slide · `[ ]` prev/next starred · `⇧S` starred list · `N` notes
 `⌘F` or `/` search · `⌘T` `⌘W` `⌘1`-`⌘9` tabs · `?` help
+`⌘N` new note · `E` edit · `⌘S` save · `⇧⌘S` share · `M` map
 `Esc` back to library · `⌘R` rescan
 
 Reading position, stars and appearance are remembered per deck.

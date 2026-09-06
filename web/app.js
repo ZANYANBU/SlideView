@@ -329,6 +329,7 @@ function card(d) {
 function showScreen(which) {
   $('#library').hidden = which !== 'library';
   $('#viewer').hidden = which !== 'viewer';
+  $('#editor').hidden = which !== 'editor';
   $('#graph').hidden = which !== 'graph';
   document.body.dataset.screen = which;
   renderTabs();
@@ -419,6 +420,9 @@ function renderTabs() {
 }
 
 async function openDoc(id, opts = {}) {
+  const d0 = findDoc(id);
+  if (d0 && d0.ext === 'txt' && !opts.preview) return openEditor(id);
+
   const open = TABS.find(t => t.docId === id);
   if (open) return switchTab(open);
   const d = findDoc(id);
@@ -527,6 +531,7 @@ async function activate(t) {
     if (cur !== t) return;
     adopt(t);
   }
+  $('#editBtn').hidden = !canEdit(t.doc);
   $('#pageTotal').textContent = S.total;
   setLoading(false);
   await show(S.page, false);
@@ -1000,6 +1005,7 @@ addEventListener('keydown', e => {
     if (!$('#searchPanel').hidden || !$('#starPanel').hidden) return closePanels();
     if (typing) return e.target.blur();
     if (document.body.dataset.screen === 'viewer') return toLibrary();
+    if (document.body.dataset.screen === 'editor') { flushEditor(); return toLibrary(); }
     if (document.body.dataset.screen === 'graph') return toLibrary();
     if (cur) { showScreen('viewer'); renderTabs(); }
     return;
@@ -1057,6 +1063,7 @@ addEventListener('keydown', e => {
     case 'h': case 'H': setZen(!document.body.classList.contains('zen')); break;
     case 't': case 'T': $('#stripBtn').click(); break;
     case 'n': case 'N': toggleNotes(); break;
+    case 'e': case 'E': if (S.doc && canEdit(S.doc)) openEditor(S.doc.id); break;
     case 's': e.shiftKey ? openStars() : toggleStar(); break;
     case 'S': openStars(); break;
     case '[': jumpStar(-1); break;
@@ -1079,6 +1086,7 @@ new ResizeObserver(() => {
   rsTimer = setTimeout(() => { if (S.pdf && !$('#viewer').hidden) show(S.page, false); }, 130);
 }).observe($('#stage'));
 addEventListener('resize', syncDragZone);
+addEventListener('beforeunload', () => { if (E.dirty) navigator.sendBeacon?.('/api/text?id=' + E.id, $('#edText').value); });
 
 /* right-click -> native menu (Copy, Google Lens, Gemini, open in Chrome…) */
 function slideMenu(e, id, page) {
@@ -1123,7 +1131,19 @@ const COMMANDS = {
   exportNotes: () => exportNotes(),
   reveal:    () => { if (S.doc) send('reveal', { id: S.doc.id }); },
   rescan:    () => { loadLibrary(); toast('Rescanned'); },
-  help:      () => { $('#help').hidden = false; }
+  help:      () => { $('#help').hidden = false; },
+  newNote:   () => openNewNote(),
+  save:      () => { if (E.id) { E.dirty = true; saveEditor(); } else flushNote(); },
+  edit:      () => { if (S.doc && canEdit(S.doc)) openEditor(S.doc.id); },
+  share:     () => {
+    const id = E.id || S.doc?.id;
+    if (!id) return toast('Open something first');
+    send('share', { id, what: E.id ? 'original' : 'pdf', x: 60, y: 60 });
+  },
+  copyFile:  () => {
+    const id = E.id || S.doc?.id;
+    if (id) send('copyFile', { id, what: 'original' });
+  }
 };
 
 /* native bridge */
@@ -1157,6 +1177,149 @@ setTheme(S.theme);
 relocateTabs();
 syncDragZone();
 loadLibrary().then(() => send('ready'));
+
+/* ═══════════════════════════  EDITOR  ═══════════════════════════
+   A plain-text notepad: create a .txt, type, autosave. Editable files can
+   also be flipped between here and the formatted view.
+   ═══════════════════════════════════════════════════════════════════ */
+const E = { id: null, doc: null, dirty: false, timer: null, saving: false };
+
+function canEdit(d) {
+  return d && (S.lib?.editable || []).includes(d.ext);
+}
+
+async function openEditor(id) {
+  const d = findDoc(id);
+  if (!d) return;
+  await flushEditor();
+  E.id = id; E.doc = d;
+  showScreen('editor');
+  send('title', { text: d.name });
+  $('#edName').textContent = d.name + '.' + d.ext;
+  $('#edWhere').textContent = (d.path || '').replace(/^\/Users\/[^/]+/, '~');
+  $('#edStatus').textContent = '';
+  const ta = $('#edText');
+  ta.value = '';
+  ta.disabled = true;
+  try {
+    const r = await fetch('/api/text?id=' + id);
+    ta.value = r.ok ? await r.text() : '';
+  } catch { ta.value = ''; }
+  ta.disabled = false;
+  updateCount();
+  setTimeout(() => ta.focus(), 30);
+}
+
+function updateCount() {
+  const v = $('#edText').value;
+  const words = v.trim() ? v.trim().split(/\s+/).length : 0;
+  $('#edCount').textContent = `${words} words · ${v.length} chars`;
+}
+
+function editorChanged() {
+  if (!E.id) return;
+  E.dirty = true;
+  $('#edStatus').textContent = 'Saving…';
+  updateCount();
+  clearTimeout(E.timer);
+  E.timer = setTimeout(saveEditor, 600);
+}
+
+async function saveEditor() {
+  clearTimeout(E.timer);
+  if (!E.id || !E.dirty || E.saving) return;
+  E.saving = true;
+  const id = E.id, body = $('#edText').value;
+  try {
+    const r = await fetch('/api/text?id=' + id, { method: 'POST', body });
+    if (!r.ok) throw new Error('rejected');
+    E.dirty = false;
+    $('#edStatus').textContent = 'Saved';
+    setTimeout(() => { if ($('#edStatus').textContent === 'Saved') $('#edStatus').textContent = ''; }, 1400);
+    // the rendered PDF is stale now
+    dropCaches();
+    const t = TABS.find(x => x.docId === id);
+    if (t) { t.pdf = null; t.total = 0; t.doc.state = 'pending'; }
+  } catch {
+    $('#edStatus').textContent = 'Not saved';
+  } finally {
+    E.saving = false;
+  }
+}
+const flushEditor = () => (E.dirty ? saveEditor() : Promise.resolve());
+
+$('#edText').addEventListener('input', editorChanged);
+$('#edText').addEventListener('blur', flushEditor);
+$('#edText').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Tab') {                       // a notepad should indent, not tab away
+    e.preventDefault();
+    const ta = e.target, a = ta.selectionStart, b = ta.selectionEnd;
+    ta.value = ta.value.slice(0, a) + '\t' + ta.value.slice(b);
+    ta.selectionStart = ta.selectionEnd = a + 1;
+    editorChanged();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); E.dirty = true; saveEditor(); }
+  if (e.key === 'Escape') { flushEditor(); toLibrary(); }
+});
+$('#edBack').onclick = () => { flushEditor(); toLibrary(); };
+$('#edReveal').onclick = () => { if (E.id) send('reveal', { id: E.id }); };
+$('#edCopy').onclick = () => {
+  const t = $('#edText').value;
+  if (!t.trim()) return toast('Nothing to copy');
+  send('copyText', { text: t });
+  toast('Note copied to the clipboard');
+};
+$('#edShare').onclick = async e => {
+  await flushEditor();
+  if (E.id) send('share', { id: E.id, what: 'original', x: e.clientX, y: e.clientY });
+};
+$('#edWrap').onclick = () => {
+  const ta = $('#edText');
+  ta.classList.toggle('nowrap');
+  $('#edWrap').classList.toggle('on', !ta.classList.contains('nowrap'));
+};
+$('#edView').onclick = async () => {
+  const id = E.id;
+  await flushEditor();
+  if (id) { await loadLibrary(); openDoc(id, { preview: true }); }
+};
+$('#editBtn').onclick = () => { if (S.doc) openEditor(S.doc.id); };
+
+/* ── new note ────────────────────────────────────────────── */
+function openNewNote() {
+  const sheet = $('#newNote');
+  const folders = S.lib?.folders || [];
+  if (!folders.length) return toast('Add a library folder first');
+  $('#nnFolder').innerHTML = folders
+    .map(f => `<option value="${esc(f.path)}">${esc(f.name)}</option>`).join('');
+  // default to the folder of whatever subject is showing
+  const want = S.subject !== 'all'
+    ? folders.find(f => f.name.endsWith('/' + S.subject) || f.name === S.subject) : null;
+  if (want) $('#nnFolder').value = want.path;
+  $('#nnName').value = 'Untitled note';
+  sheet.hidden = false;
+  setTimeout(() => { $('#nnName').focus(); $('#nnName').select(); }, 30);
+}
+$('#newNoteBtn').onclick = openNewNote;
+$('#nnCancel').onclick = () => { $('#newNote').hidden = true; };
+$('#newNote').addEventListener('click', e => { if (e.target.id === 'newNote') $('#newNote').hidden = true; });
+$('#nnName').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') $('#nnCreate').click();
+  if (e.key === 'Escape') $('#newNote').hidden = true;
+});
+$('#nnCreate').onclick = async () => {
+  const dir = $('#nnFolder').value, name = $('#nnName').value;
+  const r = await fetch(`/api/new?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`,
+                        { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  $('#newNote').hidden = true;
+  if (!d.ok) return toast('Could not create that note');
+  await loadLibrary();
+  openEditor(d.id);
+  toast(`Created ${d.name}.${d.ext}`);
+};
 
 /* ═══════════════════════════  MAP  ═══════════════════════════
    A force-directed map of the library: which documents are linked by
