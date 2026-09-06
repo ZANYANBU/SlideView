@@ -246,8 +246,19 @@
   <div class="sheet">
     <h2>New note</h2>
     <label class="fld"><span>Name</span><input id="nnName" spellcheck="false" value="Untitled note"></label>
+
+    <div class="fld"><span>Type</span>
+      <div class="seg wide" id="nnType" role="radiogroup">
+        <button data-ext="txt" class="on">Plain text<em>.txt</em></button>
+        <button data-ext="md">Markdown<em>.md</em></button>
+        <button data-ext="csv">Table<em>.csv</em></button>
+        <button data-ext="__other">Other<em>…</em></button>
+      </div>
+      <select id="nnOther" hidden></select>
+    </div>
+
     <label class="fld"><span>Folder</span><select id="nnFolder"></select></label>
-    <p class="sheet-hint">Saved as a plain <code>.txt</code> file. Add <code>.md</code> to the name for Markdown.</p>
+    <p class="sheet-hint">Saves as <code id="nnPreview">Untitled note.txt</code></p>
     <div class="sheet-actions">
       <button class="btn" id="nnCancel">Cancel</button>
       <button class="btn primary" id="nnCreate">Create</button>

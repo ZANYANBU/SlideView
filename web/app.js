@@ -1307,20 +1307,60 @@ $('#edView').onclick = async () => {
 $('#editBtn').onclick = () => { if (S.doc) openEditor(S.doc.id); };
 
 /* ── new note ────────────────────────────────────────────── */
+const NOTE_TYPES = ['txt', 'md', 'csv'];
+/* A new Markdown note starts with its own title, the way note apps do.
+   Everything else starts empty. */
+const NOTE_TEMPLATE = { md: name => `# ${name}\n\n` };
+let nnExt = 'txt';
+
+function nnStem() {
+  const raw = $('#nnName').value.trim() || 'Untitled note';
+  const m = raw.match(/^(.*)\.([A-Za-z0-9]+)$/);
+  if (m && (S.lib?.editable || []).includes(m[2].toLowerCase())) return m[1];
+  return raw;
+}
+function nnRefresh() {
+  $('#nnPreview').textContent = `${nnStem()}.${nnExt}`;
+  const other = !NOTE_TYPES.includes(nnExt);
+  $('#nnOther').hidden = !other;
+  $$('#nnType button').forEach(b =>
+    b.classList.toggle('on', b.dataset.ext === nnExt || (other && b.dataset.ext === '__other')));
+}
+
 function openNewNote() {
   const sheet = $('#newNote');
   const folders = S.lib?.folders || [];
   if (!folders.length) return toast('Add a library folder first');
   $('#nnFolder').innerHTML = folders
     .map(f => `<option value="${esc(f.path)}">${esc(f.name)}</option>`).join('');
-  // default to the folder of whatever subject is showing
   const want = S.subject !== 'all'
     ? folders.find(f => f.name.endsWith('/' + S.subject) || f.name === S.subject) : null;
   if (want) $('#nnFolder').value = want.path;
+
+  const rest = (S.lib?.editable || []).filter(e => !NOTE_TYPES.includes(e)).sort();
+  $('#nnOther').innerHTML = rest.map(e => `<option value="${e}">.${e}</option>`).join('');
+
   $('#nnName').value = 'Untitled note';
+  nnExt = 'txt';
+  nnRefresh();
   sheet.hidden = false;
   setTimeout(() => { $('#nnName').focus(); $('#nnName').select(); }, 30);
 }
+
+$('#nnType').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  nnExt = b.dataset.ext === '__other' ? ($('#nnOther').value || 'tex') : b.dataset.ext;
+  nnRefresh();
+  if (b.dataset.ext === '__other') $('#nnOther').focus();
+});
+$('#nnOther').addEventListener('change', e => { nnExt = e.target.value; nnRefresh(); });
+// Typing "notes.md" should pick Markdown on its own.
+$('#nnName').addEventListener('input', () => {
+  const m = $('#nnName').value.trim().match(/^.*\.([A-Za-z0-9]+)$/);
+  if (m && (S.lib?.editable || []).includes(m[1].toLowerCase())) nnExt = m[1].toLowerCase();
+  nnRefresh();
+});
+
 $('#newNoteBtn').onclick = openNewNote;
 $('#nnCancel').onclick = () => { $('#newNote').hidden = true; };
 $('#newNote').addEventListener('click', e => { if (e.target.id === 'newNote') $('#newNote').hidden = true; });
@@ -1330,12 +1370,18 @@ $('#nnName').addEventListener('keydown', e => {
   if (e.key === 'Escape') $('#newNote').hidden = true;
 });
 $('#nnCreate').onclick = async () => {
-  const dir = $('#nnFolder').value, name = $('#nnName').value;
-  const r = await fetch(`/api/new?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`,
+  const dir = $('#nnFolder').value;
+  const stem = nnStem();
+  const file = `${stem}.${nnExt}`;
+  const r = await fetch(`/api/new?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(file)}`,
                         { method: 'POST' });
   const d = await r.json().catch(() => ({}));
   $('#newNote').hidden = true;
   if (!d.ok) return toast('Could not create that note');
+
+  const seed = NOTE_TEMPLATE[d.ext]?.(d.name);
+  if (seed) await fetch('/api/text?id=' + d.id, { method: 'POST', body: seed });
+
   await loadLibrary();
   openEditor(d.id);
   toast(`Created ${d.name}.${d.ext}`);

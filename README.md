@@ -77,9 +77,14 @@ scratch. The only vendored third-party code is PDF.js (Apache 2.0), credited in
 
 ## Notepad
 
-`⌘N` creates a plain `.txt` note in any library folder and opens it in a simple
-full-window editor — type and it saves itself, `⌘S` forces a save. Add `.md` to
-the name to get a Markdown note instead.
+`⌘N` creates a note in any library folder and opens it in a simple full-window
+editor — type and it saves itself, `⌘S` forces a save.
+
+Pick the type in the sheet: **Plain text** `.txt`, **Markdown** `.md`, **Table**
+`.csv`, or *Other* for any other editable extension (`.tex`, `.py`, `.json`, …).
+Typing an extension into the name selects the matching type on its own, and the
+sheet always shows the filename you will end up with. A new Markdown note starts
+with its own `#` title; the rest start empty.
 
 `.txt` files open straight into the editor rather than the formatted view;
 Markdown, CSV and code files open formatted with an **Edit** button (`E`) to
