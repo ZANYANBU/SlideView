@@ -377,32 +377,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard let d = Library.shared.doc(id) else { return }
         ctxDoc = d; ctxPage = page
 
+        let rendered = FileManager.default.fileExists(atPath: Library.shared.pdfPath(d).path)
+        let pages = rendered ? Library.shared.pageCount(d) : 0
+
         let m = NSMenu()
-        m.addItem(withTitle: "Slide \(page) of \(d.name)", action: nil, keyEquivalent: "")
-        m.items.first?.isEnabled = false
+        let header = NSMenuItem(
+            title: pages > 1 ? "Slide \(page) of \(d.name)" : "\(d.name).\(d.ext)",
+            action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        m.addItem(header)
         m.addItem(.separator())
-        func add(_ title: String, _ sel: Selector) {
+
+        func item(_ title: String, _ sel: Selector) -> NSMenuItem {
             let it = NSMenuItem(title: title, action: sel, keyEquivalent: "")
             it.target = self
-            m.addItem(it)
+            return it
         }
-        add("Copy Slide as Image", #selector(ctxCopyImage))
-        add("Copy Slide Text", #selector(ctxCopyText))
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let sub = NSMenu(title: title)
+            items.forEach { sub.addItem($0) }
+            let host = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            host.submenu = sub
+            m.addItem(host)
+        }
+
+        // Slide-level actions only make sense once there is something rendered.
+        if rendered {
+            m.addItem(item("Copy Slide as Image", #selector(ctxCopyImage)))
+            m.addItem(item("Copy Slide Text", #selector(ctxCopyText)))
+            m.addItem(.separator())
+            submenu("Search with", [
+                item("Google Lens", #selector(ctxLens)),
+                item("Google", #selector(ctxGoogle)),
+                item("Ask Gemini", #selector(ctxGemini))
+            ])
+        }
+
+        var shareItems = [item("Share File…", #selector(ctxShare))]
+        if rendered { shareItems.append(item("Share as PDF…", #selector(ctxSharePDF))) }
+        shareItems.append(item("Copy File", #selector(ctxCopyFile)))
+        submenu("Share", shareItems)
+
+        var openItems: [NSMenuItem] = []
+        if rendered { openItems.append(item("PDF in Chrome", #selector(ctxChromePDF))) }
+        openItems.append(item("Original in Default App", #selector(ctxOpenOriginal)))
+        openItems.append(item("Reveal in Finder", #selector(ctxReveal)))
+        submenu("Open", openItems)
+
         m.addItem(.separator())
-        add("Search this Slide with Google Lens", #selector(ctxLens))
-        add("Ask Gemini about this Slide", #selector(ctxGemini))
-        add("Search Slide Text on Google", #selector(ctxGoogle))
-        m.addItem(.separator())
-        add("Share…", #selector(ctxShare))
-        add("Share as PDF…", #selector(ctxSharePDF))
-        add("Copy File", #selector(ctxCopyFile))
-        m.addItem(.separator())
-        add("Rename…", #selector(ctxRename))
-        add("Move to Trash", #selector(ctxTrash))
-        m.addItem(.separator())
-        add("Open PDF in Chrome", #selector(ctxChromePDF))
-        add("Open Original in Default App", #selector(ctxOpenOriginal))
-        add("Reveal Original in Finder", #selector(ctxReveal))
+        m.addItem(item("Rename…", #selector(ctxRename)))
+        m.addItem(item("Move to Trash", #selector(ctxTrash)))
+
         m.popUp(positioning: nil, at: pt, in: web)
     }
 
