@@ -574,3 +574,7 @@ body.zen.peek .vbar{
 .sheet-hint code{ background:rgba(255,255,255,.08); padding:1px 4px; border-radius:4px;
   font-family:ui-monospace,"SF Mono",monospace; }
 .sheet-actions{ display:flex; justify-content:flex-end; gap:8px; }
+
+.card-art .ph .ph-ext{
+  font-size:15px; font-weight:650; letter-spacing:1px; color:var(--fg2);
+}

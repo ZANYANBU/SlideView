@@ -297,11 +297,31 @@ function renderGrid() {
   $('#libEmpty').hidden = !!allDocs().length;
   grid.hidden = !allDocs().length;
 
-  grid.innerHTML = subs.map(s => {
+  const html = subs.map(s => {
     const head = (S.subject === 'all' && S.lib.subjects.length > 1)
       ? `<div class="sec-head">${esc(s.name)}<span class="n">${s.docs.length}</span></div>` : '';
     return head + s.docs.map(card).join('');
   }).join('');
+  grid.innerHTML = html;
+  guardThumbnails();
+}
+
+/* A thumbnail can 404 if the file moved or was deleted since the last scan.
+   Show the file type rather than the browser's broken-image glyph, and rescan
+   so the stale card disappears. */
+let staleTimer = null;
+function guardThumbnails() {
+  $$('#grid .card-art img').forEach(img => {
+    img.addEventListener('error', () => {
+      const ph = document.createElement('div');
+      ph.className = 'ph';
+      ph.innerHTML = `<span class="ph-ext">${esc((img.dataset.ext || '').toUpperCase())}</span>`
+                   + `<span>No preview</span>`;
+      img.replaceWith(ph);
+      clearTimeout(staleTimer);
+      staleTimer = setTimeout(loadLibrary, 900);
+    }, { once: true });
+  });
 }
 
 function card(d) {
@@ -309,7 +329,7 @@ function card(d) {
   const stars = store.get(`sv:stars:${d.id}`, []).length;
   const pct = d.pages && pos ? Math.round(pos / d.pages * 100) : 0;
   const art = d.state === 'ready'
-    ? `<img src="/api/thumb?id=${d.id}" loading="lazy" alt="">`
+    ? `<img src="/api/thumb?id=${d.id}" data-ext="${d.ext}" loading="lazy" alt="">`
     : `<div class="ph">${d.state === 'error'
         ? '⚠︎<br>Could not convert' : '<div class="spinner"></div>Converting…'}</div>`;
   return `<button class="card" data-id="${d.id}">
