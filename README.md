@@ -218,8 +218,20 @@ Reading position, stars and appearance are remembered per deck.
 
 ## Right-click a slide
 
-Copy as image · copy text · **Google Lens** · **Ask Gemini** · search on Google ·
-open PDF in Chrome · reveal original in Finder.
+    Slide 3 of Unit 1
+    ─────────────────────
+    Copy Slide as Image
+    Copy Slide Text
+    ─────────────────────
+    Search with   ▸   Google Lens · Google · Ask Gemini
+    Share         ▸   Share File… · Share as PDF… · Copy File
+    Open          ▸   PDF in Chrome · Original in Default App · Reveal in Finder
+    ─────────────────────
+    Rename…
+    Move to Trash
+
+Slide-level entries are hidden for anything not yet rendered — a credentials
+file or a deck still converting shows only the actions that can actually work.
 
 Chrome cannot be embedded inside another app, and Google Lens cannot reach a
 `127.0.0.1` URL — so these put the slide (image or text) on the clipboard and
