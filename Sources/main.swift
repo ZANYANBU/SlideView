@@ -38,6 +38,7 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
                 "state": lib.state(d).rawValue,
                 "pages": ready ? lib.pageCount(d) : 0,
                 "notes": lib.noteCount(d.id),
+                "sensitive": Library.isSensitive(d.url),
                 "path": d.url.path
             ])
         }

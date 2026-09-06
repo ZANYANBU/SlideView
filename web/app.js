@@ -441,6 +441,7 @@ function renderTabs() {
 
 async function openDoc(id, opts = {}) {
   const d0 = findDoc(id);
+  if (d0 && d0.sensitive) return openEditor(id);
   if (d0 && d0.ext === 'txt' && !opts.preview) return openEditor(id);
 
   const open = TABS.find(t => t.docId === id);
@@ -1338,6 +1339,7 @@ $('#edWrap').onclick = () => {
   $('#edWrap').classList.toggle('on', !ta.classList.contains('nowrap'));
 };
 $('#edView').onclick = async () => {
+  if (E.doc?.sensitive) return toast('Not rendered — this looks like a credentials file');
   const id = E.id;
   await flushEditor();
   if (id) { await loadLibrary(); openDoc(id, { preview: true }); }

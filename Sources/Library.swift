@@ -61,6 +61,27 @@ final class Library {
         "sh", "zsh", "bash", "sql", "json", "yaml", "yml", "xml", "html", "htm", "css",
         "scss", "less", "toml", "ini", "cfg", "conf", "env", "gradle", "make", "mk", "log"]
 
+    /// Files that typically hold credentials. These are never scanned, never
+    /// converted, and never cached — rendering one to a PDF would leave a
+    /// readable copy of your secrets sitting in Application Support.
+    /// Note ".key" is deliberately absent: that is Keynote.
+    private static let secretExts: Set<String> = ["env", "pem", "p12", "pfx", "keystore", "jks", "ppk", "asc", "gpg"]
+    private static let secretNames: Set<String> = [".npmrc", ".netrc", ".pgpass", ".htpasswd", ".pypirc"]
+    private static let secretStems: Set<String> = [
+        "env", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "secret", "secrets"]
+
+    static func isSensitive(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        let ext  = url.pathExtension.lowercased()
+        if secretExts.contains(ext) { return true }
+        if secretNames.contains(name) { return true }
+        if name.hasPrefix(".env") { return true }                 // .env, .env.local
+        if secretStems.contains(stem) { return true }             // env.txt, credentials.json
+        if stem.hasPrefix("env.") || stem.hasPrefix("secrets.") || stem.hasPrefix("credentials.") { return true }
+        return false
+    }
+
     /// Directories that are never study material.
     private static let skipDirs: Set<String> = [
         "node_modules", ".git", "build", "dist", "out", "target", "venv", ".venv", "env",
@@ -283,7 +304,7 @@ final class Library {
 
     /// Drop every cached artefact belonging to a document id. Notes are left
     /// alone: restoring the file from the Trash brings them straight back.
-    private func purgeCaches(_ id: String) {
+    func purgeCaches(_ id: String) {
         for dir in [cacheDir, thumbDir] {
             guard let items = try? FileManager.default.contentsOfDirectory(at: dir,
                                                                           includingPropertiesForKeys: nil)
@@ -380,6 +401,11 @@ final class Library {
                 continue
             }
             let ext = url.pathExtension.lowercased()
+            if Self.isSensitive(url) {
+                // Also sweep up renders made before this rule existed.
+                purgeCaches(Self.hash(url.standardizedFileURL.path))
+                continue
+            }
             guard Self.scanned.contains(ext) else { continue }
             if (vals?.fileSize ?? 0) > 300 * 1024 * 1024 { continue }
             if url.lastPathComponent.hasPrefix("~$") || url.lastPathComponent.hasPrefix(".") { continue }
@@ -438,6 +464,17 @@ final class Library {
             let tmp = self.cacheDir.appendingPathComponent("tmp-\(doc.id)-\(UUID().uuidString.prefix(6))", isDirectory: true)
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmp) }
+
+            if Self.isSensitive(doc.url) {
+                self.fail(doc, """
+                     This looks like a credentials file, so SlideView will not \
+                     render it to a PDF — that would leave a readable copy of \
+                     your secrets in the app's cache.
+
+                     Open it with E to read and edit the text directly.
+                     """)
+                return
+            }
 
             // Everything except LibreOffice's formats is rendered in-process.
             let kind = Self.kind(doc.ext)

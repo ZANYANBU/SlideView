@@ -29,6 +29,16 @@ own base64, so no kernel is needed).
 sidebar. A folder of study material almost always also holds screenshots, scans
 and ID photos, and indexing those buries the decks. They stay openable on demand.
 
+**Credentials files are never scanned, converted or cached.** Anything that
+looks like secrets — `.env` and `.env.*`, a file called `env`/`env.txt`,
+`credentials.*`, `secrets.*`, `id_rsa`, `.npmrc`, `.netrc`, and `.pem` `.p12`
+`.pfx` `.keystore` `.jks` `.ppk` `.asc` `.gpg` — is skipped. Rendering one would
+leave a readable copy of your keys in `~/Library/Application Support/SlideView`,
+which is exactly the thing you would not want. Open one deliberately and it goes
+straight to the text editor, which reads the file directly and caches nothing.
+Any render made before this rule existed is deleted the next time the library is
+scanned. (`.key` is *not* on the list — that is Keynote.)
+
 **Code and config files are opened on demand but never scanned.** Indexing every
 `.js` and `.json` under a project folder would bury the actual material — so the
 library stays clean, while `⌘O`, drag-and-drop and Finder's *Open With* will open
