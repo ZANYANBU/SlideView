@@ -396,6 +396,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         add("Share as PDF…", #selector(ctxSharePDF))
         add("Copy File", #selector(ctxCopyFile))
         m.addItem(.separator())
+        add("Rename…", #selector(ctxRename))
+        add("Move to Trash", #selector(ctxTrash))
+        m.addItem(.separator())
         add("Open PDF in Chrome", #selector(ctxChromePDF))
         add("Open Original in Default App", #selector(ctxOpenOriginal))
         add("Reveal Original in Finder", #selector(ctxReveal))
@@ -469,6 +472,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard FileManager.default.fileExists(atPath: pdf.path) else { return }
         openInChrome(URL(fileURLWithPath: pdf.path))
     }
+    @objc private func ctxRename() {
+        guard let d = ctxDoc else { return }
+        let a = NSAlert()
+        a.messageText = "Rename “\(d.name).\(d.ext)”"
+        a.informativeText = "Keep the extension to keep the file type."
+        a.addButton(withTitle: "Rename")
+        a.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = "\(d.name).\(d.ext)"
+        a.accessoryView = field
+        a.window.initialFirstResponder = field
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        guard let r = Library.shared.rename(d.id, to: field.stringValue) else {
+            let e = NSAlert()
+            e.messageText = "Could not rename that file"
+            e.informativeText = "A file with that name may already exist in the same folder."
+            e.runModal()
+            return
+        }
+        web.evaluateJavaScript("window.sv && window.sv.renamed && window.sv.renamed('\(d.id)','\(r.id)')")
+        toast("Renamed to \(r.name)")
+    }
+
+    @objc private func ctxTrash() {
+        guard let d = ctxDoc else { return }
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Move “\(d.name).\(d.ext)” to the Trash?"
+        a.informativeText = "It goes to the Trash, so you can put it back from there."
+        a.addButton(withTitle: "Move to Trash")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        guard Library.shared.trash(d.id) else {
+            let e = NSAlert()
+            e.messageText = "Could not move that file to the Trash"
+            e.runModal()
+            return
+        }
+        web.evaluateJavaScript("window.sv && window.sv.removed && window.sv.removed('\(d.id)')")
+        toast("Moved to Trash")
+    }
+
     @objc private func ctxShare() { share(ctxDoc, pdf: false) }
     @objc private func ctxSharePDF() { share(ctxDoc, pdf: true) }
     @objc private func ctxCopyFile() {
@@ -585,6 +632,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         file.addItem(.separator())
         file.addItem(mi("Share…", "s", [.command, .shift], cmd: "share"))
         file.addItem(mi("Copy File", cmd: "copyFile"))
+        file.addItem(.separator())
+        file.addItem(mi("Rename…", cmd: "rename"))
+        // No ⌘⌫ shortcut: it would shadow "delete to start of line" in the editor.
+        file.addItem(mi("Move to Trash", cmd: "trash"))
         file.addItem(mi("Export Deck Notes as Markdown…", "e", [.command, .option], cmd: "exportNotes"))
         let reveal = NSMenuItem(title: "Reveal Original in Finder", action: #selector(menuReveal), keyEquivalent: "r")
         reveal.keyEquivalentModifierMask = [.command, .shift]
