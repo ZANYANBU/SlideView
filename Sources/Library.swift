@@ -70,6 +70,9 @@ final class Library {
     /// Images are excluded by default: a material folder usually also contains
     /// screenshots, scans and ID photos, and indexing them buries the decks.
     /// They stay openable on demand via ⌘O, Finder and drag-and-drop.
+    /// Text formats SlideView can edit in place, not just render.
+    static var editable: Set<String> { plain.union(markdown).union(table).union(code) }
+
     static var scanImages: Bool {
         get { UserDefaults.standard.bool(forKey: "scanImages") }
         set {
@@ -165,6 +168,76 @@ final class Library {
         docs = map
         lock.unlock()
         return found
+    }
+
+    // MARK: - Editing and creating plain-text notes
+
+    func readEditable(_ id: String) -> String? {
+        guard let d = doc(id), Self.editable.contains(d.ext) else { return nil }
+        return Converters.readText(d.url)
+    }
+
+    /// Write a text document back to disk and drop its rendered PDF so the
+    /// formatted view regenerates from the new content.
+    @discardableResult
+    func writeEditable(_ id: String, _ text: String) -> Bool {
+        guard let d = doc(id), Self.editable.contains(d.ext) else { return false }
+        do {
+            try text.write(to: d.url, atomically: true, encoding: .utf8)
+        } catch { return false }
+
+        // The cache key folds in mtime and size, so the old PDF is now orphaned.
+        try? FileManager.default.removeItem(at: pdfPath(d))
+        lock.lock()
+        states[d.id] = nil
+        notesCache[d.id] = notesCache[d.id]      // notes are keyed by page, keep them
+        lock.unlock()
+        GraphBuilder.shared.invalidate()
+        return true
+    }
+
+    /// Create an empty note. `dir` must be inside a library folder.
+    func createNote(dir: String, name: String) -> Doc? {
+        let folder = URL(fileURLWithPath: dir).standardizedFileURL
+        let allowed = roots.contains { folder.path == $0.standardizedFileURL.path
+                                    || folder.path.hasPrefix($0.standardizedFileURL.path + "/") }
+        guard allowed, FileManager.default.fileExists(atPath: folder.path) else { return nil }
+
+        var base = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { base = "Untitled note" }
+        base = base.replacingOccurrences(of: "/", with: "-")
+        var ext = (base as NSString).pathExtension.lowercased()
+        if ext.isEmpty || !Self.editable.contains(ext) { base += ".txt"; ext = "txt" }
+
+        var url = folder.appendingPathComponent(base)
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            let stem = (base as NSString).deletingPathExtension
+            url = folder.appendingPathComponent("\(stem) \(n).\(ext)")
+            n += 1
+        }
+        guard (try? "".write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return adopt(url)
+    }
+
+    /// Folders that already hold material, offered when creating a note.
+    func writableFolders() -> [[String: String]] {
+        var seen = Set<String>()
+        var out: [[String: String]] = []
+        for r in roots {
+            let p = r.standardizedFileURL.path
+            if seen.insert(p).inserted { out.append(["path": p, "name": r.lastPathComponent]) }
+        }
+        for d in scan() {
+            let p = d.url.deletingLastPathComponent().standardizedFileURL.path
+            guard seen.insert(p).inserted else { continue }
+            guard let root = roots.first(where: { p.hasPrefix($0.standardizedFileURL.path) }) else { continue }
+            let rel = String(p.dropFirst(root.standardizedFileURL.path.count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            out.append(["path": p, "name": rel.isEmpty ? root.lastPathComponent
+                                                       : "\(root.lastPathComponent)/\(rel)"])
+        }
+        return out.sorted { $0["name"]! .localizedStandardCompare($1["name"]!) == .orderedAscending }
     }
 
     // MARK: - Files opened from outside the library

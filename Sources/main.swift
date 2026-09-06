@@ -46,6 +46,8 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
             "rootName": lib.root.lastPathComponent,
             "roots": lib.roots.map { ["path": $0.path, "name": $0.lastPathComponent] },
             "scanImages": Library.scanImages,
+            "folders": lib.writableFolders(),
+            "editable": Array(Library.editable),
             "subjects": subjects.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
                 .map { ["name": $0, "docs": subjects[$0]!] }
         ]
@@ -83,6 +85,24 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
             return .json(["ok": true, "count": lib.noteCount(id)])
         }
         return .json(lib.notes(id))
+
+    case "/api/text":
+        guard let id = req.query["id"] else { return .text("no id", status: 400) }
+        if req.method == "POST" {
+            guard lib.writeEditable(id, req.bodyText) else { return .json(["ok": false], status: 400) }
+            return .json(["ok": true])
+        }
+        guard let text = lib.readEditable(id) else { return .text("not editable", status: 404) }
+        return HTTPResponse(status: 200,
+                            headers: ["Content-Type": "text/plain; charset=utf-8"],
+                            body: Data(text.utf8))
+
+    case "/api/new":
+        guard let dir = req.query["dir"], let name = req.query["name"],
+              let d = lib.createNote(dir: dir, name: name) else {
+            return .json(["ok": false], status: 400)
+        }
+        return .json(["ok": true, "id": d.id, "name": d.name, "ext": d.ext])
 
     case "/api/settings":
         if let v = req.query["images"] { Library.scanImages = (v == "1") }
@@ -302,6 +322,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 let x = (body["x"] as? Double) ?? 0, y = (body["y"] as? Double) ?? 0
                 showSlideMenu(id: id, page: page, at: NSPoint(x: x, y: web.bounds.height - y))
             }
+        case "share":
+            // The standard macOS share sheet: AirDrop, Mail, Messages, Notes…
+            if let id = body["id"] as? String, let d = Library.shared.doc(id) {
+                let wantPDF = (body["what"] as? String) == "pdf"
+                let url = wantPDF ? Library.shared.pdfPath(d) : d.url
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    toast(wantPDF ? "Still converting — try again in a moment" : "File not found")
+                    break
+                }
+                let x = (body["x"] as? Double) ?? 40, y = (body["y"] as? Double) ?? 40
+                let rect = NSRect(x: x, y: web.bounds.height - y, width: 1, height: 1)
+                let picker = NSSharingServicePicker(items: [url])
+                picker.show(relativeTo: rect, of: web, preferredEdge: .minY)
+            }
+        case "copyFile":
+            if let id = body["id"] as? String, let d = Library.shared.doc(id) {
+                let wantPDF = (body["what"] as? String) == "pdf"
+                let url = wantPDF ? Library.shared.pdfPath(d) : d.url
+                guard FileManager.default.fileExists(atPath: url.path) else { break }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.writeObjects([url as NSURL])
+                toast("Copied \(url.lastPathComponent) to the clipboard")
+            }
         case "copyText":
             if let t = body["text"] as? String, !t.isEmpty {
                 NSPasteboard.general.clearContents()
@@ -348,6 +391,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         add("Search this Slide with Google Lens", #selector(ctxLens))
         add("Ask Gemini about this Slide", #selector(ctxGemini))
         add("Search Slide Text on Google", #selector(ctxGoogle))
+        m.addItem(.separator())
+        add("Share…", #selector(ctxShare))
+        add("Share as PDF…", #selector(ctxSharePDF))
+        add("Copy File", #selector(ctxCopyFile))
         m.addItem(.separator())
         add("Open PDF in Chrome", #selector(ctxChromePDF))
         add("Open Original in Default App", #selector(ctxOpenOriginal))
@@ -422,6 +469,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard FileManager.default.fileExists(atPath: pdf.path) else { return }
         openInChrome(URL(fileURLWithPath: pdf.path))
     }
+    @objc private func ctxShare() { share(ctxDoc, pdf: false) }
+    @objc private func ctxSharePDF() { share(ctxDoc, pdf: true) }
+    @objc private func ctxCopyFile() {
+        guard let d = ctxDoc else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([d.url as NSURL])
+        toast("Copied \(d.url.lastPathComponent) to the clipboard")
+    }
+    private func share(_ d: Doc?, pdf: Bool) {
+        guard let d else { return }
+        let url = pdf ? Library.shared.pdfPath(d) : d.url
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            toast(pdf ? "Still converting — try again in a moment" : "File not found")
+            return
+        }
+        let rect = NSRect(x: web.bounds.midX, y: web.bounds.maxY - 60, width: 1, height: 1)
+        NSSharingServicePicker(items: [url]).show(relativeTo: rect, of: web, preferredEdge: .minY)
+    }
+
     @objc private func ctxOpenOriginal() { if let d = ctxDoc { NSWorkspace.shared.open(d.url) } }
     @objc private func ctxReveal() { if let d = ctxDoc { NSWorkspace.shared.activateFileViewerSelecting([d.url]) } }
 
@@ -504,6 +570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         // ── File ─────────────────────────────────────────────────────
         let fileItem = NSMenuItem()
         let file = NSMenu(title: "File")
+        file.addItem(mi("New Note", "n", cmd: "newNote"))
         let open = NSMenuItem(title: "Open…", action: #selector(menuOpen), keyEquivalent: "o")
         open.target = self
         file.addItem(open)
@@ -514,6 +581,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         file.addItem(.separator())
         file.addItem(mi("Close Tab", "w", cmd: "closeTab"))
         file.addItem(.separator())
+        file.addItem(mi("Save", "s", cmd: "save"))
+        file.addItem(.separator())
+        file.addItem(mi("Share…", "s", [.command, .shift], cmd: "share"))
+        file.addItem(mi("Copy File", cmd: "copyFile"))
         file.addItem(mi("Export Deck Notes as Markdown…", "e", [.command, .option], cmd: "exportNotes"))
         let reveal = NSMenuItem(title: "Reveal Original in Finder", action: #selector(menuReveal), keyEquivalent: "r")
         reveal.keyEquivalentModifierMask = [.command, .shift]

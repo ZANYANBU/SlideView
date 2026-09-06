@@ -521,3 +521,56 @@ body.zen.peek .vbar{
   overflow:hidden; text-overflow:ellipsis; }
 .graph-legend i{ display:inline-block; width:8px; height:8px; border-radius:50%; flex:none; }
 .graph-legend .n{ margin-left:auto; color:var(--fg3); font-variant-numeric:tabular-nums; }
+
+/* ═══════════════════════  EDITOR  ═══════════════════════ */
+#editor{ flex-direction:column; background:var(--bg); }
+.ebar{
+  flex:none; display:flex; align-items:center; gap:8px;
+  padding:8px 12px; border-bottom:1px solid var(--sep); background:var(--bg);
+}
+.ed-title{ display:flex; flex-direction:column; min-width:0; flex:1; margin-left:4px; }
+.ed-title>span:first-child{ font-size:12.5px; font-weight:600; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.ed-where{ font-size:10.5px; color:var(--fg3); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.ed-status{ font-size:11px; color:var(--fg3); min-width:56px; text-align:right; }
+.ed-count{ font-size:11px; color:var(--fg3); font-variant-numeric:tabular-nums; }
+.ebar .btn{ height:26px; padding:0 11px; font-size:11.5px; }
+.ebar .btn.on{ background:var(--accent); border-color:transparent; color:#fff; }
+#edText{
+  flex:1; width:100%; resize:none; border:0; outline:0; background:var(--bg);
+  color:var(--fg); user-select:text; cursor:text;
+  padding:26px max(26px, calc((100% - 820px) / 2));
+  font:14px/1.75 ui-monospace,"SF Mono",Menlo,monospace;
+  tab-size:4; white-space:pre-wrap;
+}
+#edText.nowrap{ white-space:pre; overflow-x:auto; }
+#edText::placeholder{ color:var(--fg3); }
+
+.hdr-btn{ display:flex; align-items:center; gap:6px; height:27px; flex:none; }
+
+/* iOS-style sheet */
+.sheet-back{
+  position:fixed; inset:0; z-index:60; display:grid; place-items:center;
+  background:rgba(0,0,0,.45); backdrop-filter:blur(3px);
+}
+.sheet{
+  width:min(420px,88vw); padding:22px 24px 18px; border-radius:16px;
+  background:rgba(34,34,38,.97); border:1px solid var(--sep-strong);
+  box-shadow:0 20px 60px rgba(0,0,0,.55);
+  animation:sheetIn .22s var(--ease);
+}
+@keyframes sheetIn{ from{ opacity:0; transform:translateY(10px) scale(.98) } }
+.sheet h2{ font-size:16px; margin-bottom:16px; }
+.fld{ display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+.fld span{ font-size:11px; color:var(--fg3); }
+.fld input, .fld select{
+  height:30px; padding:0 10px; border-radius:var(--r-sm); outline:0;
+  background:rgba(255,255,255,.08); border:1px solid var(--sep); color:var(--fg);
+  user-select:text; font-size:13px;
+}
+.fld input:focus, .fld select:focus{ border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim); }
+.sheet-hint{ font-size:11px; color:var(--fg3); margin:2px 0 16px; }
+.sheet-hint code{ background:rgba(255,255,255,.08); padding:1px 4px; border-radius:4px;
+  font-family:ui-monospace,"SF Mono",monospace; }
+.sheet-actions{ display:flex; justify-content:flex-end; gap:8px; }
