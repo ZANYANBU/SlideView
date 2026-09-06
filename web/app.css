@@ -578,3 +578,16 @@ body.zen.peek .vbar{
 .card-art .ph .ph-ext{
   font-size:15px; font-weight:650; letter-spacing:1px; color:var(--fg2);
 }
+
+/* type picker in the new-note sheet */
+.seg.wide{ width:100%; }
+.seg.wide button{
+  flex:1; height:34px; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:1px; padding:0 4px; line-height:1.1;
+}
+.seg.wide button em{ font-style:normal; font-size:9.5px; opacity:.6;
+  font-family:ui-monospace,"SF Mono",monospace; }
+#nnOther{ margin-top:8px; height:30px; padding:0 10px; border-radius:var(--r-sm);
+  background:rgba(255,255,255,.08); border:1px solid var(--sep); color:var(--fg);
+  outline:0; font-size:13px; width:100%; }
+#nnPreview{ color:var(--fg2); }
