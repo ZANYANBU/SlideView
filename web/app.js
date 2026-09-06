@@ -1163,7 +1163,9 @@ const COMMANDS = {
   copyFile:  () => {
     const id = E.id || S.doc?.id;
     if (id) send('copyFile', { id, what: 'original' });
-  }
+  },
+  rename:    () => { const id = E.id || S.doc?.id; if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); },
+  trash:     () => { const id = E.id || S.doc?.id; if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); }
 };
 
 /* native bridge */
@@ -1190,7 +1192,41 @@ window.sv = {
   rootChanged() { S.subject = 'all'; G.loaded = false; loadLibrary(); },
   newTab() { toLibrary(); },
   closeTab() { if (cur) closeTab(cur); },
-  toast(msg) { toast(msg); }
+  toast(msg) { toast(msg); },
+  /* A rename changes the document id, so carry local state across. */
+  renamed(oldId, newId) {
+    for (const k of ['sv:pos', 'sv:stars']) {
+      const v = localStorage.getItem(`${k}:${oldId}`);
+      if (v !== null) { localStorage.setItem(`${k}:${newId}`, v); localStorage.removeItem(`${k}:${oldId}`); }
+    }
+    if (E.id === oldId) E.id = newId;
+    const t = TABS.find(x => x.docId === oldId);
+    G.loaded = false;
+    dropCaches();
+    loadLibrary().then(() => {
+      const fresh = findDoc(newId);
+      if (t) {
+        // The old Doc said "ready", so the tab skipped conversion and asked for
+        // a PDF that no longer exists. Adopt the reloaded record instead.
+        t.docId = newId;
+        t.pdf = null;
+        t.total = 0;
+        t.text = null;
+        t.textDone = 0;
+        if (fresh) t.doc = fresh;
+      }
+      renderTabs();                       // the tab still showed the old name
+      if (E.id === newId) return openEditor(newId);
+      if (cur && cur.docId === newId) return activate(cur);
+    });
+  },
+  removed(id) {
+    const t = TABS.find(x => x.docId === id);
+    if (t) closeTab(t);
+    if (E.id === id) { E.id = null; E.dirty = false; toLibrary(); }
+    G.loaded = false;
+    loadLibrary();
+  }
 };
 
 setTheme(S.theme);
@@ -1283,7 +1319,9 @@ $('#edText').addEventListener('keydown', e => {
   if (e.key === 'Escape') { flushEditor(); toLibrary(); }
 });
 $('#edBack').onclick = () => { flushEditor(); toLibrary(); };
-$('#edReveal').onclick = () => { if (E.id) send('reveal', { id: E.id }); };
+$('#edMore').onclick = e => {
+  if (E.id) send('contextMenu', { id: E.id, page: 1, x: e.clientX, y: e.clientY });
+};
 $('#edCopy').onclick = () => {
   const t = $('#edText').value;
   if (!t.trim()) return toast('Nothing to copy');

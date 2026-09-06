@@ -125,6 +125,7 @@ final class Library {
             list = [fm.fileExists(atPath: guess.path) ? guess.path : desktop.path]
         }
         roots = list.filter { fm.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+        defer { restoreAdopted() }
     }
 
     func addRoots(_ urls: [URL]) {
@@ -220,6 +221,82 @@ final class Library {
         return adopt(url)
     }
 
+    /// Rename a document on disk. The id is a hash of the path, so it changes —
+    /// the notes file is carried across and the new id is returned so the UI can
+    /// migrate reading position and stars too.
+    func rename(_ id: String, to proposed: String) -> (id: String, name: String)? {
+        guard let d = doc(id) else { return nil }
+        var name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+        guard !name.isEmpty else { return nil }
+        if (name as NSString).pathExtension.isEmpty { name += "." + d.ext }
+
+        let dst = d.url.deletingLastPathComponent().appendingPathComponent(name)
+        if dst.standardizedFileURL == d.url.standardizedFileURL { return (id, d.name) }
+        guard !FileManager.default.fileExists(atPath: dst.path) else { return nil }
+        do { try FileManager.default.moveItem(at: d.url, to: dst) } catch { return nil }
+
+        let newID = Self.hash(dst.standardizedFileURL.path)
+        // carry the notes over, and drop caches keyed to the old identity
+        let oldNotes = notesURL(id), newNotes = notesURL(newID)
+        if FileManager.default.fileExists(atPath: oldNotes.path) {
+            try? FileManager.default.removeItem(at: newNotes)
+            try? FileManager.default.moveItem(at: oldNotes, to: newNotes)
+        }
+        purgeCaches(id)
+        lock.lock()
+        notesCache[newID] = notesCache[id]
+        notesCache[id] = nil
+        if adopted[id] != nil { adopted[id] = nil }
+        docs[id] = nil
+        lock.unlock()
+        saveAdopted()
+
+        // Being inside a library folder is not enough — the scan only picks up
+        // scannable extensions, so a renamed .env would vanish from the library.
+        let inRoot = roots.contains { dst.path.hasPrefix($0.standardizedFileURL.path) }
+        if inRoot && Self.scanned.contains(dst.pathExtension.lowercased()) {
+            _ = scan()
+        } else {
+            _ = adopt(dst)
+        }
+        GraphBuilder.shared.invalidate()
+        return (newID, dst.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Move a document to the Trash — never an unrecoverable delete.
+    func trash(_ id: String) -> Bool {
+        guard let d = doc(id) else { return false }
+        do {
+            try FileManager.default.trashItem(at: d.url, resultingItemURL: nil)
+        } catch { return false }
+        purgeCaches(id)
+        lock.lock()
+        adopted[id] = nil
+        docs[id] = nil
+        states[id] = nil
+        lock.unlock()
+        saveAdopted()
+        GraphBuilder.shared.invalidate()
+        return true
+    }
+
+    /// Drop every cached artefact belonging to a document id. Notes are left
+    /// alone: restoring the file from the Trash brings them straight back.
+    private func purgeCaches(_ id: String) {
+        for dir in [cacheDir, thumbDir] {
+            guard let items = try? FileManager.default.contentsOfDirectory(at: dir,
+                                                                          includingPropertiesForKeys: nil)
+            else { continue }
+            for f in items where f.lastPathComponent.hasPrefix(id) {
+                try? FileManager.default.removeItem(at: f)
+            }
+        }
+        lock.lock()
+        pageCounts = pageCounts.filter { !$0.key.hasPrefix(id) }
+        lock.unlock()
+    }
+
     /// Folders that already hold material, offered when creating a note.
     func writableFolders() -> [[String: String]] {
         var seen = Set<String>()
@@ -244,10 +321,25 @@ final class Library {
 
     private var adopted: [String: Doc] = [:]
 
+    /// Files opened or created outside a scanned folder used to live only in
+    /// memory, so a relaunch stranded them on disk with no way to reach them
+    /// from the app. Their paths are remembered instead.
+    private func saveAdopted() {
+        let paths = adopted.values.map(\.url.path).sorted()
+        UserDefaults.standard.set(paths, forKey: "adoptedFiles")
+    }
+
+    private func restoreAdopted() {
+        let paths = UserDefaults.standard.stringArray(forKey: "adoptedFiles") ?? []
+        for p in paths where FileManager.default.fileExists(atPath: p) {
+            _ = adopt(URL(fileURLWithPath: p), remember: false)
+        }
+    }
+
     /// Register a file that is not inside any library folder — opened from
     /// Finder, dropped on the window, or picked with ⌘O.
     @discardableResult
-    func adopt(_ url: URL) -> Doc? {
+    func adopt(_ url: URL, remember: Bool = true) -> Doc? {
         let ext = url.pathExtension.lowercased()
         guard Self.openable.contains(ext),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -263,8 +355,12 @@ final class Library {
         lock.lock()
         adopted[doc.id] = doc
         docs[doc.id] = doc
+        let snapshot = adopted
         lock.unlock()
-        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        if remember {
+            UserDefaults.standard.set(snapshot.values.map(\.url.path).sorted(), forKey: "adoptedFiles")
+            NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        }
         return doc
     }
 

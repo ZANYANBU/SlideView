@@ -93,6 +93,17 @@ switch. **Preview** flips back, re-rendering from what you just wrote.
 Notes stay ordinary files on disk — no database, no proprietary format — so they
 show up in the map alongside everything else and can be opened by anything.
 
+## Renaming and deleting
+
+Right-click any slide or card — or `⋯` in the editor — for **Rename…** and
+**Move to Trash**. Both confirm first, and deletion goes to the Trash, never
+straight to an unrecoverable delete, so a mistake is undone from Finder.
+
+Renaming changes a document's identity (the id is a hash of its path), so the
+notes file is carried across and the UI migrates reading position and starred
+slides to the new id. Restoring a file from the Trash to its old path brings its
+notes back with it, since notes are deliberately not purged on delete.
+
 ## Sharing
 
 **Share** opens the standard macOS share sheet (AirDrop, Mail, Messages, Notes),
