@@ -12,6 +12,11 @@ func mimeType(_ ext: String) -> String {
     case "png":  return "image/png"
     case "svg":  return "image/svg+xml"
     case "woff2": return "font/woff2"
+    case "woff": return "font/woff"
+    case "ttf":  return "font/ttf"
+    case "jpg", "jpeg": return "image/jpeg"
+    case "wasm": return "application/wasm"
+    case "txt", "md": return "text/plain; charset=utf-8"
     case "pdf":  return "application/pdf"
     default: return "application/octet-stream"
     }
@@ -105,6 +110,30 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         }
         return .json(["ok": true, "id": d.id, "name": d.name, "ext": d.ext])
 
+    case "/api/preview":
+        // The drawing editor posts a PNG of the scene after each save.
+        guard req.method == "POST", let id = req.query["id"], !req.body.isEmpty else {
+            return .json(["ok": false], status: 400)
+        }
+        let scale = CGFloat(Double(req.query["scale"] ?? "1") ?? 1)
+        return .json(["ok": lib.storePreview(id, png: req.body, scale: scale)])
+
+    case "/api/drawlib":
+        // The user's Excalidraw shape library, shared by every drawing.
+        let file = lib.support.appendingPathComponent("library.excalidrawlib")
+        if req.method == "POST" {
+            guard (try? JSONSerialization.jsonObject(with: req.body)) != nil else {
+                return .json(["ok": false], status: 400)
+            }
+            let ok = (try? req.body.write(to: file, options: .atomic)) != nil
+            return .json(["ok": ok])
+        }
+        let data = (try? Data(contentsOf: file))
+            ?? Data(#"{"type":"excalidrawlib","version":2,"libraryItems":[]}"#.utf8)
+        return HTTPResponse(status: 200,
+                            headers: ["Content-Type": "application/json; charset=utf-8"],
+                            body: data)
+
     case "/api/settings":
         if let v = req.query["images"] { Library.scanImages = (v == "1") }
         return .json(["scanImages": Library.scanImages])
@@ -163,13 +192,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var window: NSWindow!
     var web: WKWebView!
     var dragView: WindowDragView!
+    var webDragTypes: [NSPasteboard.PasteboardType] = []
+    private var terminating = false
     let recentMenu = NSMenu(title: "Open Recent")
     let server = HTTPServer()
 
     func applicationDidFinishLaunching(_ note: Notification) {
         server.handler = route
         var port: UInt16 = 0
-        do { port = try server.start() } catch {
+        do { port = try server.start(); DrawingRenderer.port = port } catch {
             let a = NSAlert()
             a.messageText = "SlideView could not start"
             a.informativeText = error.localizedDescription
@@ -186,6 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         web.underPageBackgroundColor = NSColor(calibratedRed: 0.078, green: 0.078, blue: 0.086, alpha: 1)
         web.setValue(false, forKey: "drawsBackground")
         web.allowsMagnification = false
+        web.uiDelegate = self
+        web.navigationDelegate = self
 
         let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
@@ -200,6 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let container = RootView(frame: NSRect(x: 0, y: 0, width: 1280, height: 820))
         container.registerForDraggedTypes([.fileURL])
         container.onDrop = { [weak self] urls in self?.handleOpen(urls) }
+        // Remembered so the drawing editor can take drops itself (an image
+        // dropped on the canvas should land in the drawing, not open a tab).
+        webDragTypes = web.registeredDraggedTypes
+        if webDragTypes.isEmpty { webDragTypes = [.fileURL, .URL, .string, .html, .tiff, .png, .pdf] }
         web.unregisterDraggedTypes()
         web.frame = container.bounds
         web.autoresizingMask = [.width, .height]
@@ -233,6 +270,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+    /// Autosave is debounced, so quitting inside that window would lose the
+    /// last stroke or sentence. Give the page a moment to flush first.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard webReady, !terminating, let web else { return .terminateNow }
+        terminating = true
+        var replied = false
+        let reply = {
+            guard !replied else { return }
+            replied = true
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        web.callAsyncJavaScript("if (window.sv && window.sv.flushAll) { await window.sv.flushAll(); }",
+                                arguments: [:], in: nil, in: .page) { _ in reply() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reply() }
+        return .terminateLater
+    }
 
     // MARK: Opening documents
 
@@ -306,6 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             flushPendingOpens()
         case "toggleFullScreen":
             window.toggleFullScreen(nil)
+        case "webDrops":
+            if (body["on"] as? Bool) == true { web.registerForDraggedTypes(webDragTypes) }
+            else { web.unregisterDraggedTypes() }
         case "title":
             window.title = (body["text"] as? String) ?? "SlideView"
         case "reveal":
@@ -644,6 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let fileItem = NSMenuItem()
         let file = NSMenu(title: "File")
         file.addItem(mi("New Note", "n", cmd: "newNote"))
+        file.addItem(mi("New Drawing", "n", [.command, .shift], cmd: "newDrawing"))
         let open = NSMenuItem(title: "Open…", action: #selector(menuOpen), keyEquivalent: "o")
         open.target = self
         file.addItem(open)
@@ -803,6 +861,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     @objc private func menuReload() { web.reload() }
     @objc private func menuNewTab() { web.evaluateJavaScript("window.sv && window.sv.newTab && window.sv.newTab()") }
     @objc private func menuCloseTab() { web.evaluateJavaScript("window.sv && window.sv.closeTab && window.sv.closeTab()") }
+}
+
+// MARK: - Behaving like a browser
+//
+// A bare WKWebView silently ignores several things web apps take for granted:
+// <input type="file"> opens nothing, downloads go nowhere, confirm() returns
+// false, and window.open() is dropped. The embedded Excalidraw editor relies on
+// all of them (insert image, export PNG/SVG, open a scene, browse libraries).
+
+extension AppDelegate: WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
+
+    private func isLocal(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return true }      // about:, blob:, data:
+        return host == "127.0.0.1" || host == "localhost"
+    }
+
+    // File pickers
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.beginSheetModal(for: window) { r in completionHandler(r == .OK ? panel.urls : nil) }
+    }
+
+    // window.open / target=_blank: real web links belong in the user's browser
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let u = navigationAction.request.url, !isLocal(u),
+           ["http", "https", "mailto"].contains(u.scheme?.lowercased() ?? "") {
+            NSWorkspace.shared.open(u)
+        }
+        return nil
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.shouldPerformDownload { return decisionHandler(.download) }
+        // Never let the app's own window wander off to a website. Embeds inside
+        // a drawing load in sub-frames and are left alone.
+        if let u = navigationAction.request.url, !isLocal(u),
+           ["http", "https", "mailto"].contains(u.scheme?.lowercased() ?? ""),
+           navigationAction.targetFrame?.isMainFrame ?? true {
+            NSWorkspace.shared.open(u)
+            return decisionHandler(.cancel)
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+    }
+
+    // Downloads (export image, save a copy of the scene, export library)
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedFilename
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { r in
+            guard r == .OK, let url = panel.url else { return completionHandler(nil) }
+            // WKDownload refuses to overwrite; the panel already asked.
+            try? FileManager.default.removeItem(at: url)
+            completionHandler(url)
+        }
+    }
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        toastFromNative("Could not save that file")
+    }
+    func downloadDidFinish(_ download: WKDownload) {
+        toastFromNative("Saved")
+    }
+
+    // alert / confirm / prompt
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let a = NSAlert()
+        a.messageText = message
+        a.beginSheetModal(for: window) { _ in completionHandler() }
+    }
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let a = NSAlert()
+        a.messageText = message
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        a.beginSheetModal(for: window) { r in completionHandler(r == .alertFirstButtonReturn) }
+    }
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let a = NSAlert()
+        a.messageText = prompt
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = defaultText ?? ""
+        a.accessoryView = field
+        a.addButton(withTitle: "OK")
+        a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = field
+        a.beginSheetModal(for: window) { r in
+            completionHandler(r == .alertFirstButtonReturn ? field.stringValue : nil)
+        }
+    }
+
+    fileprivate func toastFromNative(_ s: String) {
+        let esc = s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        web.evaluateJavaScript("window.sv && window.sv.toast && window.sv.toast('\(esc)')")
+    }
 }
 
 let app = NSApplication.shared

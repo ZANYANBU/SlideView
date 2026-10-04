@@ -19,6 +19,7 @@ invert, Google Lens and Gemini.
 | Notes | `md` `markdown` `rmd` `txt` `tex` `org` `rst` | in-process |
 | Notebooks | `ipynb` | in-process |
 | Images | `png` `jpg` `jpeg` `heic` `heif` `gif` `webp` `tiff` `bmp` | PDFKit — **off by default**, see below |
+| Drawings | `excalidraw` | Excalidraw's own exporter — see [Drawing board](#drawing-board) |
 | Code | `swift` `py` `c` `cpp` `java` `js` `ts` `json` `yaml` `sql` … | in-process |
 
 Jupyter notebooks keep their structure: markdown cells, `In [n]` prompts, code
@@ -79,11 +80,78 @@ Worth stating plainly, because it constrains what this repo can contain:
 | [Skim](https://skim-app.sourceforge.io) | macOS PDF reader/annotator | BSD |
 | [Sioyek](https://github.com/ahrm/sioyek) | Research-paper reader | GPLv3 |
 
+| [Excalidraw](https://github.com/excalidraw/excalidraw) | Hand-drawn style whiteboard | **MIT** |
+
 Copying from the GPL/AGPL projects would force this MIT repo to relicense, and
 Obsidian has nothing to copy. So the ideas were worth studying and the code was
 not: the smart-invert pass, the map, and every converter here are written from
-scratch. The only vendored third-party code is PDF.js (Apache 2.0), credited in
+scratch.
+
+Excalidraw is the exception, and the licence is why: it is MIT, like this repo,
+so the drawing board embeds the real editor instead of imitating it. The
+vendored third-party code is PDF.js (Apache 2.0) and Excalidraw with its
+dependencies (MIT and other permissive licences), all credited in
 [web/vendor/NOTICE.md](web/vendor/NOTICE.md).
+
+## Drawing board
+
+**New drawing** on the library's front page (or `⇧⌘N`) creates an `.excalidraw`
+file and opens it in the real [Excalidraw](https://github.com/excalidraw/excalidraw)
+editor, version 0.18.1, embedded in the app: every shape and tool, hand-drawn
+and architect styles, arrows that bind to shapes, elbow arrows, frames, images,
+the laser pointer, shape libraries, Mermaid-to-diagram, and PNG / SVG / clipboard
+export.
+
+A drawing behaves like every other SlideView document:
+
+- It is an ordinary file in your library folder, in Excalidraw's standard
+  format — the same file opens on excalidraw.com or in any other Excalidraw.
+- It saves itself as you draw, and again before the app quits.
+- It has a thumbnail in the library, the labels written on it feed the map, and
+  **Preview** opens it as a slide with notes, stars and smart invert like any
+  deck.
+- Rename, Trash, Share and Reveal work on it from the `⋯` menu.
+
+Images can be pasted, picked from disk, or dropped straight onto the canvas.
+Your shape library is shared across all drawings and kept in
+`~/Library/Application Support/SlideView/library.excalidrawlib`.
+
+### What is not there, and why
+
+Three excalidraw.com features depend on Excalidraw's own servers rather than on
+the editor, so they are absent here by design:
+
+- **Live collaboration** needs a relay server and a shared room.
+- **Shareable links** upload the scene to Excalidraw's backend.
+- **AI text-to-diagram** calls Excalidraw's AI service. Mermaid-to-diagram, which
+  runs locally, is included.
+
+The 12 MB CJK handwriting font is also left out to keep the app small; those
+characters fall back to a system font. The drawing page refuses every request
+that is not to the app's own local server, so the editor cannot quietly reach
+for a CDN.
+
+### How it is wired
+
+Excalidraw's published build leaves about thirty dependencies as bare imports,
+so it cannot be served as-is. `Tools/vendor-excalidraw.sh` bundles it once with
+esbuild into `web/vendor/excalidraw/` — committed, so building the app still
+needs no Node. The editor runs in an iframe (`web/draw.html`, `web/draw.js`), so
+its React tree and stylesheet stay out of the rest of the app and nothing loads
+until a drawing is opened.
+
+Thumbnails come from Excalidraw's own exporter, the only renderer that draws a
+scene exactly as the editor does. The editor posts a picture after each save; a
+drawing that arrives from elsewhere is rendered by the same page in an offscreen
+web view. A scene that fails to parse is never replaced with an empty one — the
+editor declines to open it and leaves the file alone.
+
+A bare `WKWebView` ignores file pickers, downloads, `confirm()` and
+`window.open()`, all of which Excalidraw relies on, so the app implements them:
+*insert image* opens a panel, *export* opens a save dialog, and web links go to
+your browser. Excalidraw's own shortcuts (`⌘Z`, `⌘D`, `⌘G`…) take priority inside
+a drawing: WebKit offers a key chord to the page first, and only passes it on to
+the menu bar if the page does not use it.
 
 ## Notepad
 
@@ -211,7 +279,7 @@ Notes are keyed by page only — editing and re-converting a deck keeps them.
 `D` appearance · `F` full screen · `H` zen · `T` thumbnail rail · `+ −` zoom · `0` fit · `W` fit width
 `S` star slide · `[ ]` prev/next starred · `⇧S` starred list · `N` notes
 `⌘F` or `/` search · `⌘T` `⌘W` `⌘1`-`⌘9` tabs · `?` help
-`⌘N` new note · `E` edit · `⌘S` save · `⇧⌘S` share · `M` map
+`⌘N` new note · `⇧⌘N` new drawing · `E` edit · `⌘S` save · `⇧⌘S` share · `M` map
 `Esc` back to library · `⌘R` rescan
 
 Reading position, stars and appearance are remembered per deck.
@@ -289,11 +357,12 @@ paints — and the paginator reads `offsetTop`.
 
     Sources/    Swift — HTTP server, library scan, converters (LibreOffice,
                 Markdown, notebooks, code, images), AppKit shell
-    web/        UI — index.html, app.css, app.js, vendored pdf.js
-    Tools/      icon generator
+    web/        UI — index.html, app.css, app.js; draw.html + draw.js for the
+                drawing board; vendored pdf.js and Excalidraw
+    Tools/      icon generator, and the script that re-vendors Excalidraw
     build.sh    compile + assemble the .app
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). Bundled PDF.js is Apache 2.0; see
-[web/vendor/NOTICE.md](web/vendor/NOTICE.md).
+MIT — see [LICENSE](LICENSE). Bundled PDF.js is Apache 2.0 and bundled
+Excalidraw is MIT; see [web/vendor/NOTICE.md](web/vendor/NOTICE.md).

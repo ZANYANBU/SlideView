@@ -591,3 +591,16 @@ body.zen.peek .vbar{
   background:rgba(255,255,255,.08); border:1px solid var(--sep); color:var(--fg);
   outline:0; font-size:13px; width:100%; }
 #nnPreview{ color:var(--fg2); }
+
+/* ═══════════════════════  DRAWING  ═══════════════════════ */
+#draw{ flex-direction:column; background:var(--bg); }
+#drawFrame{ flex:1; width:100%; border:0; display:block; background:#121212; }
+.seg.wide button em{ white-space:nowrap; }
+
+/* library header: the title block gives way, the buttons never wrap or shrink */
+.lib-header{ gap:10px; }
+.lib-heading{ flex:1 1 auto; min-width:150px; margin-right:6px; }
+.lib-heading h1, .lib-heading .sub{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.lib-header .btn{ flex:none; white-space:nowrap; }
+.lib-header .lib-search{ flex:0 12 200px; min-width:84px; }   /* the filter yields before the title does */
+#newDrawBtn svg{ color:var(--accent); }

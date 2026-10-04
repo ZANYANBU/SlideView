@@ -116,7 +116,8 @@ final class HTTPServer {
             if let d = data { b.append(d) }
             if b.count >= need { self.respond(conn, head: head, body: Data(b.prefix(need))); return }
             if error != nil || isComplete { self.respond(conn, head: head, body: b); return }
-            if b.count > 8 * 1024 * 1024 { conn.cancel(); return }
+            // Drawings embed their images, so a scene can run to tens of megabytes.
+            if b.count > 128 * 1024 * 1024 { conn.cancel(); return }
             self.readBody(conn, head: head, body: b, need: need)
         }
     }

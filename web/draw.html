@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drawing</title>
+<link rel="stylesheet" href="/vendor/excalidraw/excalidraw.css">
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: #121212; overflow: hidden;
+         font: 13px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  .sv-msg { height: 100%; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 10px; color: rgba(235,235,245,.62); text-align: center;
+            padding: 40px; }
+  .sv-msg b { color: #f2f2f5; font-size: 15px; }
+  .sv-msg code { font: 11.5px ui-monospace, "SF Mono", monospace; color: rgba(235,235,245,.4);
+                 max-width: 520px; white-space: pre-wrap; }
+  .sv-spin { width: 22px; height: 22px; border-radius: 50%;
+             border: 2px solid rgba(255,255,255,.14); border-top-color: #0a84ff;
+             animation: svspin .7s linear infinite; }
+  @keyframes svspin { to { transform: rotate(360deg) } }
+</style>
+<script>
+  // Excalidraw fetches its fonts from here instead of a CDN.
+  window.EXCALIDRAW_ASSET_PATH = "/vendor/excalidraw/";
+
+  // SlideView works offline and never phones home. Excalidraw falls back to a
+  // public CDN for any font it cannot find locally, so anything that is not
+  // this app's own server is refused outright.
+  (function () {
+    var real = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      try {
+        var u = new URL(typeof input === "string" ? input : input.url, location.href);
+        if (u.protocol === "http:" || u.protocol === "https:") {
+          if (u.origin !== location.origin) {
+            return Promise.reject(new TypeError("SlideView is offline: " + u.host));
+          }
+        }
+      } catch (e) {}
+      return real(input, init);
+    };
+  })();
+</script>
+</head>
+<body>
+<div id="root"><div class="sv-msg"><div class="sv-spin"></div></div></div>
+<script type="module" src="/draw.js"></script>
+</body>
+</html>

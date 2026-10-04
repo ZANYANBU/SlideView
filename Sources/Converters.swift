@@ -14,6 +14,40 @@ enum Converters {
         return doc.write(to: out)
     }
 
+    // MARK: Excalidraw scenes — the words written on the canvas.
+
+    /// A drawing's rendered PDF is a picture, so it carries no text. The map
+    /// reads the labels straight from the scene instead.
+    static func drawingText(_ url: URL) -> String {
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let elements = root["elements"] as? [[String: Any]] else { return "" }
+        return elements
+            .filter { ($0["type"] as? String) == "text" && ($0["isDeleted"] as? Bool) != true }
+            .compactMap { $0["text"] as? String }
+            .joined(separator: "\n")
+    }
+
+    // MARK: PNG → one-page PDF, losslessly.
+
+    /// `PDFPage(image:)` may recompress as JPEG, which smears thin hand-drawn
+    /// strokes; a Core Graphics PDF context keeps the pixels as they are.
+    /// `scale` is the export scale, so the page keeps the drawing's real size.
+    static func pngPDF(_ data: Data, scale: CGFloat, to out: URL) -> Bool {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil),
+              img.width > 0, img.height > 0 else { return false }
+        let k = max(scale, 0.1)
+        var box = CGRect(x: 0, y: 0, width: CGFloat(img.width) / k, height: CGFloat(img.height) / k)
+        guard let ctx = CGContext(out as CFURL, mediaBox: &box, nil) else { return false }
+        ctx.beginPDFPage(nil)
+        ctx.interpolationQuality = .high
+        ctx.draw(img, in: box)
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return FileManager.default.fileExists(atPath: out.path)
+    }
+
     // MARK: Word / RTF / ODT / HTML — natively, no LibreOffice.
 
     private static let attributedTypes: [String: NSAttributedString.DocumentType] = [

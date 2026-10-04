@@ -23,6 +23,11 @@ final class Library {
     var root: URL { roots.first ?? FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0] }
     private var docs: [String: Doc] = [:]
     private var states: [String: ConvState] = [:]
+    /// Which version of the file (mtime + size) each recorded state belongs to.
+    /// Without it, a deck edited in another app stayed "ready" forever with no
+    /// PDF behind it, and was never converted again until the next launch.
+    private var stateVersion: [String: String] = [:]
+    private static func versionKey(_ d: Doc) -> String { "\(Int(d.modified))-\(d.size)" }
     private var errors: [String: String] = [:]
     private var pageCounts: [String: Int] = [:]   // keyed by cache filename (mtime+size aware)
     private var notesCache: [String: [String: String]] = [:]
@@ -35,7 +40,7 @@ final class Library {
     let profileDir: URL
     let notesDir: URL
 
-    enum Kind { case pdf, office, attributed, table, markdown, image, text, notebook }
+    enum Kind { case pdf, office, attributed, table, markdown, image, text, notebook, drawing }
 
     /// Handled by LibreOffice.
     /// Still needs LibreOffice.
@@ -50,6 +55,9 @@ final class Library {
     private static let image: Set<String> = [
         "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "tiff", "tif", "bmp"]
     private static let notebook: Set<String> = ["ipynb"]
+    /// Excalidraw scenes: edited in the embedded Excalidraw editor, and rendered
+    /// for thumbnails by Excalidraw's own exporter.
+    private static let drawing: Set<String> = ["excalidraw"]
     private static let native: Set<String> = ["pdf"]
     /// Plain text worth indexing as study material.
     private static let plain: Set<String> = ["txt", "tex", "org", "rst"]
@@ -92,7 +100,7 @@ final class Library {
     /// screenshots, scans and ID photos, and indexing them buries the decks.
     /// They stay openable on demand via ⌘O, Finder and drag-and-drop.
     /// Text formats SlideView can edit in place, not just render.
-    static var editable: Set<String> { plain.union(markdown).union(table).union(code) }
+    static var editable: Set<String> { plain.union(markdown).union(table).union(code).union(drawing) }
 
     static var scanImages: Bool {
         get { UserDefaults.standard.bool(forKey: "scanImages") }
@@ -104,7 +112,7 @@ final class Library {
 
     static var scanned: Set<String> {
         var s = native.union(office).union(attributed).union(table)
-                      .union(markdown).union(notebook).union(plain)
+                      .union(markdown).union(notebook).union(plain).union(drawing)
         if scanImages { s.formUnion(image) }
         return s
     }
@@ -118,6 +126,7 @@ final class Library {
         if markdown.contains(ext) { return .markdown }
         if image.contains(ext) { return .image }
         if notebook.contains(ext) { return .notebook }
+        if drawing.contains(ext) { return .drawing }
         if plain.contains(ext) || code.contains(ext) { return .text }
         return nil
     }
@@ -185,11 +194,39 @@ final class Library {
         lock.lock()
         var map = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
         for (id, d) in adopted where map[id] == nil {
-            if FileManager.default.fileExists(atPath: d.url.path) { map[id] = d; found.append(d) }
+            guard FileManager.default.fileExists(atPath: d.url.path) else { continue }
+            // The cache key folds in mtime and size; an adopted file edited
+            // since it was opened would otherwise keep its original key.
+            let fresh = Self.restat(d)
+            adopted[id] = fresh
+            map[id] = fresh
+            found.append(fresh)
         }
         docs = map
         lock.unlock()
         return found
+    }
+
+    /// The same document with its size and modification time read again.
+    private static func restat(_ d: Doc) -> Doc {
+        var out = d
+        if let a = try? FileManager.default.attributesOfItem(atPath: d.url.path) {
+            if let n = a[.size] as? NSNumber { out.size = n.intValue }
+            if let m = a[.modificationDate] as? Date { out.modified = m.timeIntervalSince1970 }
+        }
+        return out
+    }
+
+    /// Record a document's new size/mtime after SlideView itself wrote it, so
+    /// state lookups use the new cache key straight away instead of converting
+    /// once under the old key and again after the next scan.
+    private func refresh(_ id: String) -> Doc? {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = docs[id] else { return nil }
+        let fresh = Self.restat(d)
+        docs[id] = fresh
+        if adopted[id] != nil { adopted[id] = fresh }
+        return fresh
     }
 
     // MARK: - Editing and creating plain-text notes
@@ -212,9 +249,37 @@ final class Library {
         try? FileManager.default.removeItem(at: pdfPath(d))
         lock.lock()
         states[d.id] = nil
+        stateVersion[d.id] = nil
         notesCache[d.id] = notesCache[d.id]      // notes are keyed by page, keep them
         lock.unlock()
+        _ = refresh(id)
         GraphBuilder.shared.invalidate()
+        return true
+    }
+
+    /// The drawing editor exports a picture of the scene each time it saves.
+    /// Storing that as the document's rendered PDF means the thumbnail is ready
+    /// the moment you leave the editor, with no headless render needed.
+    @discardableResult
+    func storePreview(_ id: String, png: Data, scale: CGFloat) -> Bool {
+        guard let d = refresh(id), Self.kind(d.ext) == .drawing else { return false }
+        let out = pdfPath(d)
+        let tmp = cacheDir.appendingPathComponent("tmp-preview-\(d.id)-\(UUID().uuidString.prefix(6)).pdf")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard Converters.pngPDF(png, scale: scale, to: tmp) else { return false }
+        try? FileManager.default.removeItem(at: out)
+        guard (try? FileManager.default.moveItem(at: tmp, to: out)) != nil else { return false }
+        pruneOldCache(for: d)
+        for f in (try? FileManager.default.contentsOfDirectory(at: thumbDir, includingPropertiesForKeys: nil)) ?? []
+        where f.lastPathComponent.hasPrefix(d.id) {
+            try? FileManager.default.removeItem(at: f)
+        }
+        lock.lock()
+        states[d.id] = .ready
+        stateVersion[d.id] = Self.versionKey(d)
+        errors[d.id] = nil
+        pageCounts = pageCounts.filter { !$0.key.hasPrefix(d.id) }
+        lock.unlock()
         return true
     }
 
@@ -296,6 +361,7 @@ final class Library {
         adopted[id] = nil
         docs[id] = nil
         states[id] = nil
+        stateVersion[id] = nil
         lock.unlock()
         saveAdopted()
         GraphBuilder.shared.invalidate()
@@ -449,14 +515,22 @@ final class Library {
     func state(_ doc: Doc) -> ConvState {
         if FileManager.default.fileExists(atPath: pdfPath(doc).path) { return .ready }
         lock.lock(); defer { lock.unlock() }
-        return states[doc.id] ?? .pending
+        // A state recorded for an earlier version of the file says nothing
+        // about this one, and "ready" with no PDF on disk is not ready.
+        guard stateVersion[doc.id] == Self.versionKey(doc) else { return .pending }
+        let s = states[doc.id] ?? .pending
+        return s == .ready ? .pending : s
     }
 
     func error(_ id: String) -> String? { lock.lock(); defer { lock.unlock() }; return errors[id] }
 
     func convert(_ doc: Doc) {
         if state(doc) == .ready || state(doc) == .converting { return }
-        lock.lock(); states[doc.id] = .converting; errors[doc.id] = nil; lock.unlock()
+        lock.lock()
+        states[doc.id] = .converting
+        stateVersion[doc.id] = Self.versionKey(doc)
+        errors[doc.id] = nil
+        lock.unlock()
 
         convQueue.addOperation { [weak self] in
             guard let self else { return }
@@ -514,6 +588,12 @@ final class Library {
                     }
                     madeIt = HTMLToPDF.render(html: Converters.tableHTML(doc.url, text: text), to: produced)
 
+                case .drawing:
+                    guard let shot = DrawingRenderer.render(id: doc.id) else {
+                        self.fail(doc, "This drawing could not be rendered."); return
+                    }
+                    madeIt = Converters.pngPDF(shot.png, scale: shot.scale, to: produced)
+
                 case .attributed:
                     madeIt = Converters.attributedPDF(doc.url, to: produced)
                     if !madeIt {
@@ -530,7 +610,10 @@ final class Library {
                 try? FileManager.default.removeItem(at: out)
                 try? FileManager.default.moveItem(at: produced, to: out)
                 self.pruneOldCache(for: doc)
-                self.lock.lock(); self.states[doc.id] = .ready; self.lock.unlock()
+                self.lock.lock()
+                self.states[doc.id] = .ready
+                self.stateVersion[doc.id] = Self.versionKey(doc)
+                self.lock.unlock()
                 return
             }
 
@@ -607,14 +690,21 @@ final class Library {
             try? FileManager.default.removeItem(at: out)
             try FileManager.default.moveItem(at: produced, to: out)
             pruneOldCache(for: doc)
-            lock.lock(); states[doc.id] = .ready; lock.unlock()
+            lock.lock()
+            states[doc.id] = .ready
+            stateVersion[doc.id] = Self.versionKey(doc)
+            lock.unlock()
         } catch {
             fail(doc, error.localizedDescription)
         }
     }
 
     private func fail(_ doc: Doc, _ msg: String) {
-        lock.lock(); states[doc.id] = .error; errors[doc.id] = msg; lock.unlock()
+        lock.lock()
+        states[doc.id] = .error
+        stateVersion[doc.id] = Self.versionKey(doc)
+        errors[doc.id] = msg
+        lock.unlock()
     }
 
     /// Drop stale converted copies of the same source file (older mtime/size keys).

@@ -12,8 +12,13 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 };
 
+/* The sidebar's "All material" filter. A subject is a folder path relative to a
+   library root, so it can never be "/" — unlike "all", which is a perfectly
+   ordinary folder name and used to light up alongside it. */
+const EVERYTHING = '/';
+
 const S = {
-  lib: null, subject: 'all', filter: '',
+  lib: null, subject: '/', filter: '',
   doc: null, pdf: null, page: 1, total: 0,
   theme: store.get('sv:theme', 'smart'),
   zoom: 1, fitMode: 'fit',
@@ -272,10 +277,10 @@ function renderSidebar() {
   const subs = S.lib.subjects;
   const total = allDocs().length;
   const item = (key, label, count) =>
-    `<button class="item ${S.subject === key ? 'on' : ''}" data-sub="${key}">
+    `<button class="item ${S.subject === key ? 'on' : ''}" data-sub="${esc(key)}">
        <span class="dot"></span><span class="nm">${esc(label)}</span><span class="count">${count}</span>
      </button>`;
-  nav.innerHTML = item('all', 'All material', total) + '<div class="nav-gap"></div>' +
+  nav.innerHTML = item(EVERYTHING, 'All material', total) + '<div class="nav-gap"></div>' +
     subs.map(s => item(s.name, s.name, s.docs.length)).join('');
 }
 
@@ -285,12 +290,12 @@ function renderGrid() {
   const grid = $('#grid');
   const q = S.filter.trim().toLowerCase();
   const subs = S.lib.subjects
-    .filter(s => S.subject === 'all' || s.name === S.subject)
+    .filter(s => S.subject === EVERYTHING || s.name === S.subject)
     .map(s => ({ ...s, docs: s.docs.filter(d => !q || d.name.toLowerCase().includes(q)) }))
     .filter(s => s.docs.length);
 
   const shown = subs.flatMap(s => s.docs).length;
-  $('#libTitle').textContent = S.subject === 'all' ? 'All material' : S.subject;
+  $('#libTitle').textContent = S.subject === EVERYTHING ? 'All material' : S.subject;
   const nRoots = (S.lib.roots || []).length;
   const where = nRoots > 1 ? `${nRoots} folders` : S.lib.root.replace(/^\/Users\/[^/]+/, '~');
   $('#libSub').textContent = shown ? `${shown} deck${shown === 1 ? '' : 's'} · ${where}` : 'Nothing matches';
@@ -298,7 +303,7 @@ function renderGrid() {
   grid.hidden = !allDocs().length;
 
   const html = subs.map(s => {
-    const head = (S.subject === 'all' && S.lib.subjects.length > 1)
+    const head = (S.subject === EVERYTHING && S.lib.subjects.length > 1)
       ? `<div class="sec-head">${esc(s.name)}<span class="n">${s.docs.length}</span></div>` : '';
     return head + s.docs.map(card).join('');
   }).join('');
@@ -315,7 +320,8 @@ function guardThumbnails() {
     img.addEventListener('error', () => {
       const ph = document.createElement('div');
       ph.className = 'ph';
-      ph.innerHTML = `<span class="ph-ext">${esc((img.dataset.ext || '').toUpperCase())}</span>`
+      const label = img.dataset.ext === 'excalidraw' ? 'drawing' : (img.dataset.ext || '');
+      ph.innerHTML = `<span class="ph-ext">${esc(label.toUpperCase())}</span>`
                    + `<span>No preview</span>`;
       img.replaceWith(ph);
       clearTimeout(staleTimer);
@@ -335,24 +341,36 @@ function card(d) {
   return `<button class="card" data-id="${d.id}">
     <div class="card-art">
       ${art}
-      <span class="badge">${d.ext}</span>
+      <span class="badge">${d.ext === 'excalidraw' ? 'drawing' : d.ext}</span>
       ${stars ? `<span class="badge star">★ ${stars}</span>` : ''}
       ${d.notes ? `<span class="card-note">✎ ${d.notes}</span>` : ''}
       ${pct ? `<div class="card-bar"><i style="width:${pct}%"></i></div>` : ''}
     </div>
     <div class="card-name">${esc(d.name)}</div>
-    <div class="card-meta">${d.pages ? d.pages + ' slides · ' : ''}${fmtSize(d.size)}${pct ? ` · ${pct}%` : ''}</div>
+    <div class="card-meta">${d.ext === 'excalidraw' ? 'Drawing · ' : d.pages ? d.pages + ' slides · ' : ''}${fmtSize(d.size)}${pct && d.ext !== 'excalidraw' ? ` · ${pct}%` : ''}</div>
   </button>`;
 }
 
 /* ════════════════════════════  viewer  ════════════════════════════ */
 function showScreen(which) {
+  const was = document.body.dataset.screen;
   $('#library').hidden = which !== 'library';
   $('#viewer').hidden = which !== 'viewer';
   $('#editor').hidden = which !== 'editor';
   $('#graph').hidden = which !== 'graph';
+  $('#draw').hidden = which !== 'draw';
   document.body.dataset.screen = which;
+  if (was === 'draw' && which !== 'draw') leaveDrawing();
   renderTabs();
+}
+
+/* Which document the menu bar's Share / Rename / Trash act on. */
+function activeId() {
+  const scr = document.body.dataset.screen;
+  if (scr === 'draw') return D.id;
+  if (scr === 'editor') return E.id;
+  if (scr === 'viewer') return S.doc?.id || null;
+  return null;
 }
 
 /* ── tabs ───────────────────────────────────────────────────────────
@@ -427,10 +445,11 @@ function syncDragZone() {
 
 function renderTabs() {
   const onLib = document.body.dataset.screen === 'library';
+  const onViewer = document.body.dataset.screen === 'viewer';
   $('#newTabBtn').classList.toggle('on', onLib);
   $('#tabs').innerHTML = TABS.map((t, i) => {
     const n = Object.keys(t.notes || {}).length;
-    return `<button class="tab ${t === cur && !onLib ? 'on' : ''}" data-i="${i}" title="${esc(t.doc.name)}">
+    return `<button class="tab ${t === cur && onViewer ? 'on' : ''}" data-i="${i}" title="${esc(t.doc.name)}">
       ${n ? '<span class="tab-dot"></span>' : ''}
       <span class="tab-name">${esc(t.doc.name)}</span>
       <span class="tab-x" title="Close tab (⌘W)">✕</span>
@@ -443,6 +462,7 @@ async function openDoc(id, opts = {}) {
   const d0 = findDoc(id);
   if (d0 && d0.sensitive) return openEditor(id);
   if (d0 && d0.ext === 'txt' && !opts.preview) return openEditor(id);
+  if (d0 && d0.ext === 'excalidraw' && !opts.preview) return openDrawing(id);
 
   const open = TABS.find(t => t.docId === id);
   if (open) return switchTab(open);
@@ -1028,6 +1048,7 @@ addEventListener('keydown', e => {
     if (document.body.dataset.screen === 'viewer') return toLibrary();
     if (document.body.dataset.screen === 'editor') { flushEditor(); return toLibrary(); }
     if (document.body.dataset.screen === 'graph') return toLibrary();
+    if (document.body.dataset.screen === 'draw') return toLibrary();
     if (cur) { showScreen('viewer'); renderTabs(); }
     return;
   }
@@ -1140,9 +1161,9 @@ const COMMANDS = {
   starList:  () => openStars(),
   nextStar:  () => jumpStar(1),
   prevStar:  () => jumpStar(-1),
-  zoomIn:    () => setZoom(S.zoom * 1.25),
-  zoomOut:   () => setZoom(S.zoom / 1.25),
-  fit:       () => { S.fitMode = 'fit'; setZoom(1); },
+  zoomIn:    () => drawing() ? drawing().zoom(1.25) : setZoom(S.zoom * 1.25),
+  zoomOut:   () => drawing() ? drawing().zoom(0.8) : setZoom(S.zoom / 1.25),
+  fit:       () => { if (drawing()) return drawing().fit(); S.fitMode = 'fit'; setZoom(1); },
   fitWidth:  () => { S.fitMode = 'width'; setZoom(1); },
   newTab:    () => toLibrary(),
   closeTab:  () => { if (cur) closeTab(cur); },
@@ -1150,28 +1171,41 @@ const COMMANDS = {
   prevTab:   () => cycleTab(-1),
   library:   () => toLibrary(),
   exportNotes: () => exportNotes(),
-  reveal:    () => { if (S.doc) send('reveal', { id: S.doc.id }); },
+  reveal:    () => { const id = activeId(); if (id) send('reveal', { id }); },
   rescan:    () => { loadLibrary(); toast('Rescanned'); },
   help:      () => { $('#help').hidden = false; },
   newNote:   () => openNewNote(),
-  save:      () => { if (E.id) { E.dirty = true; saveEditor(); } else flushNote(); },
+  newDrawing: () => openNewNote('excalidraw'),
+  save:      () => {
+    if (drawing()) return drawing().flush();
+    if (document.body.dataset.screen === 'editor' && E.id) { E.dirty = true; return saveEditor(); }
+    flushNote();
+  },
   edit:      () => { if (S.doc && canEdit(S.doc)) openEditor(S.doc.id); },
   share:     () => {
-    const id = E.id || S.doc?.id;
+    const id = activeId();
     if (!id) return toast('Open something first');
-    send('share', { id, what: E.id ? 'original' : 'pdf', x: 60, y: 60 });
+    const original = document.body.dataset.screen !== 'viewer';
+    send('share', { id, what: original ? 'original' : 'pdf', x: 60, y: 60 });
   },
-  copyFile:  () => {
-    const id = E.id || S.doc?.id;
-    if (id) send('copyFile', { id, what: 'original' });
-  },
-  rename:    () => { const id = E.id || S.doc?.id; if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); },
-  trash:     () => { const id = E.id || S.doc?.id; if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); }
+  copyFile:  () => { const id = activeId(); if (id) send('copyFile', { id, what: 'original' }); },
+  rename:    () => { const id = activeId(); if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); },
+  trash:     () => { const id = activeId(); if (id) send('contextMenu', { id, page: 1, x: 80, y: 80 }); }
 };
+
+/* Menu items that only mean something in the slide viewer. While a drawing is
+   open they must do nothing: Excalidraw handles its own shortcuts first (a
+   chord the page consumes never reaches the menu bar), so these can only arrive
+   from a mouse click on the menu — and "Star This Slide" has no business
+   starring a slide in a hidden tab. */
+const VIEWER_ONLY = new Set(['next', 'prev', 'first', 'last', 'goto', 'zen', 'strip', 'notes',
+  'search', 'star', 'starList', 'nextStar', 'prevStar', 'fitWidth', 'exportNotes', 'edit']);
 
 /* native bridge */
 window.sv = {
   cmd(name) {
+    if (document.body.dataset.screen === 'draw' &&
+        (VIEWER_ONLY.has(name) || name.startsWith('theme:'))) return;
     if (name.startsWith('theme:')) return setTheme(name.slice(6));
     const fn = COMMANDS[name];
     if (fn) fn();
@@ -1190,10 +1224,14 @@ window.sv = {
     relocateTabs();
     if (S.pdf) show(S.page, false);
   },
-  rootChanged() { S.subject = 'all'; G.loaded = false; loadLibrary(); },
+  rootChanged() { S.subject = EVERYTHING; G.loaded = false; loadLibrary(); },
   newTab() { toLibrary(); },
   closeTab() { if (cur) closeTab(cur); },
   toast(msg) { toast(msg); },
+  /* Called before the app quits: nothing typed or drawn may be lost. */
+  async flushAll() {
+    await Promise.allSettled([flushEditor(), flushNote(), drawing()?.flush()]);
+  },
   /* A rename changes the document id, so carry local state across. */
   renamed(oldId, newId) {
     for (const k of ['sv:pos', 'sv:stars']) {
@@ -1201,6 +1239,7 @@ window.sv = {
       if (v !== null) { localStorage.setItem(`${k}:${newId}`, v); localStorage.removeItem(`${k}:${oldId}`); }
     }
     if (E.id === oldId) E.id = newId;
+    const wasDrawing = D.id === oldId;
     const t = TABS.find(x => x.docId === oldId);
     G.loaded = false;
     dropCaches();
@@ -1217,7 +1256,8 @@ window.sv = {
         if (fresh) t.doc = fresh;
       }
       renderTabs();                       // the tab still showed the old name
-      if (E.id === newId) return openEditor(newId);
+      if (wasDrawing && document.body.dataset.screen === 'draw') return openDrawing(newId);
+      if (E.id === newId && document.body.dataset.screen === 'editor') return openEditor(newId);
       if (cur && cur.docId === newId) return activate(cur);
     });
   },
@@ -1225,6 +1265,7 @@ window.sv = {
     const t = TABS.find(x => x.docId === id);
     if (t) closeTab(t);
     if (E.id === id) { E.id = null; E.dirty = false; toLibrary(); }
+    if (D.id === id) { D.id = null; $('#drawFrame').src = 'about:blank'; toLibrary(); }
     G.loaded = false;
     loadLibrary();
   }
@@ -1248,6 +1289,7 @@ function canEdit(d) {
 async function openEditor(id) {
   const d = findDoc(id);
   if (!d) return;
+  if (d.ext === 'excalidraw') return openDrawing(id);
   await flushEditor();
   E.id = id; E.doc = d;
   showScreen('editor');
@@ -1342,15 +1384,113 @@ $('#edView').onclick = async () => {
   if (E.doc?.sensitive) return toast('Not rendered — this looks like a credentials file');
   const id = E.id;
   await flushEditor();
-  if (id) { await loadLibrary(); openDoc(id, { preview: true }); }
+  if (id) previewDoc(id);
 };
 $('#editBtn').onclick = () => { if (S.doc) openEditor(S.doc.id); };
 
+/* ═══════════════════════════  DRAWING  ═══════════════════════════
+   An .excalidraw file opens in the real Excalidraw editor (vendored, MIT),
+   hosted in an iframe. See web/draw.js for the glue on that side.
+   ═══════════════════════════════════════════════════════════════════ */
+const D = { id: null, doc: null };
+
+/* The editor's hooks, when a drawing is on screen and has finished loading. */
+function drawing() {
+  if (document.body.dataset.screen !== 'draw') return null;
+  try { return $('#drawFrame').contentWindow?.svDraw || null; } catch { return null; }
+}
+
+function openDrawing(id) {
+  const d = findDoc(id);
+  if (!d) return;
+  if (document.body.dataset.screen === 'editor') flushEditor();
+  D.id = id; D.doc = d;
+  showScreen('draw');
+  send('title', { text: d.name });
+  send('webDrops', { on: true });           // images dropped here belong to the canvas
+  $('#dwName').textContent = d.name + '.' + d.ext;
+  $('#dwWhere').textContent = (d.path || '').replace(/^\/Users\/[^/]+/, '~');
+  $('#dwStatus').textContent = '';
+  const f = $('#drawFrame');
+  f.src = `/draw.html?id=${id}&name=${encodeURIComponent(d.name)}`;
+  f.onload = () => { try { f.contentWindow.focus(); } catch {} };
+}
+
+/* A document was edited: any tab still showing its old render must reload. */
+function invalidateTab(id) {
+  const t = TABS.find(x => x.docId === id);
+  if (!t) return;
+  try { t.pdf?.destroy(); } catch {}
+  t.pdf = null; t.total = 0; t.text = null; t.textDone = 0;
+  const fresh = findDoc(id);
+  if (fresh) t.doc = fresh;
+  if (t === cur) { S.pdf = null; S.total = 0; S.text = null; S.textDone = 0; }
+  dropCaches();
+}
+
+/* Show an edited document in the slide viewer, from its latest contents.
+   Going through openDoc alone is not enough: if its tab is already the active
+   one, openDoc just reveals the viewer, stale render and all. */
+async function previewDoc(id) {
+  await loadLibrary();
+  invalidateTab(id);
+  const t = TABS.find(x => x.docId === id);
+  if (t && t === cur) { showScreen('viewer'); return activate(t); }
+  return openDoc(id, { preview: true });
+}
+
+/* Leaving the drawing: let it finish saving, then unload Excalidraw and
+   refresh the library so the new thumbnail shows. */
+async function leaveDrawing() {
+  const f = $('#drawFrame');
+  const id = D.id;
+  const hooks = (() => { try { return f.contentWindow?.svDraw; } catch { return null; } })();
+  send('webDrops', { on: false });
+  if (id) invalidateTab(id);
+  try { await hooks?.flush(); } catch {}
+  if (document.body.dataset.screen === 'draw') return;      // reopened meanwhile
+  f.src = 'about:blank';
+  D.id = null;
+  G.loaded = false;
+  await loadLibrary();
+  const t = TABS.find(x => x.docId === id), fresh = findDoc(id);
+  if (t && fresh) t.doc = fresh;
+}
+
+window.svDrawStatus = text => {
+  const el = $('#dwStatus');
+  el.textContent = text;
+  if (text === 'Saved') setTimeout(() => { if (el.textContent === 'Saved') el.textContent = ''; }, 1400);
+};
+
+$('#dwBack').onclick = () => toLibrary();
+$('#dwShare').onclick = async e => {
+  await drawing()?.flush();
+  if (D.id) send('share', { id: D.id, what: 'original', x: e.clientX, y: e.clientY });
+};
+$('#dwMore').onclick = async e => {
+  await drawing()?.flush();
+  if (D.id) send('contextMenu', { id: D.id, page: 1, x: e.clientX, y: e.clientY });
+};
+$('#dwView').onclick = async () => {
+  const id = D.id;
+  if (!id) return;
+  await drawing()?.flush();
+  previewDoc(id);
+};
+
 /* ── new note ────────────────────────────────────────────── */
-const NOTE_TYPES = ['txt', 'md', 'csv'];
-/* A new Markdown note starts with its own title, the way note apps do.
-   Everything else starts empty. */
-const NOTE_TEMPLATE = { md: name => `# ${name}\n\n` };
+const NOTE_TYPES = ['txt', 'md', 'csv', 'excalidraw'];
+/* A new Markdown note starts with its own title, the way note apps do, and a
+   drawing starts as a valid empty scene. Everything else starts empty. */
+const NOTE_TEMPLATE = {
+  md: name => `# ${name}\n\n`,
+  excalidraw: () => JSON.stringify({
+    type: 'excalidraw', version: 2, source: 'SlideView',
+    elements: [], appState: { viewBackgroundColor: '#ffffff' }, files: {}
+  }, null, 2)
+};
+const DEFAULT_NAMES = ['Untitled note', 'Untitled drawing'];
 let nnExt = 'txt';
 
 function nnStem() {
@@ -1360,6 +1500,7 @@ function nnStem() {
   return raw;
 }
 function nnRefresh() {
+  $('#newNote h2').textContent = nnExt === 'excalidraw' ? 'New drawing' : 'New note';
   $('#nnPreview').textContent = `${nnStem()}.${nnExt}`;
   const other = !NOTE_TYPES.includes(nnExt);
   $('#nnOther').hidden = !other;
@@ -1367,21 +1508,21 @@ function nnRefresh() {
     b.classList.toggle('on', b.dataset.ext === nnExt || (other && b.dataset.ext === '__other')));
 }
 
-function openNewNote() {
+function openNewNote(preset) {
   const sheet = $('#newNote');
   const folders = S.lib?.folders || [];
   if (!folders.length) return toast('Add a library folder first');
   $('#nnFolder').innerHTML = folders
     .map(f => `<option value="${esc(f.path)}">${esc(f.name)}</option>`).join('');
-  const want = S.subject !== 'all'
+  const want = S.subject !== EVERYTHING
     ? folders.find(f => f.name.endsWith('/' + S.subject) || f.name === S.subject) : null;
   if (want) $('#nnFolder').value = want.path;
 
   const rest = (S.lib?.editable || []).filter(e => !NOTE_TYPES.includes(e)).sort();
   $('#nnOther').innerHTML = rest.map(e => `<option value="${e}">.${e}</option>`).join('');
 
-  $('#nnName').value = 'Untitled note';
-  nnExt = 'txt';
+  nnExt = NOTE_TYPES.includes(preset) ? preset : 'txt';
+  $('#nnName').value = nnExt === 'excalidraw' ? 'Untitled drawing' : 'Untitled note';
   nnRefresh();
   sheet.hidden = false;
   setTimeout(() => { $('#nnName').focus(); $('#nnName').select(); }, 30);
@@ -1390,6 +1531,10 @@ function openNewNote() {
 $('#nnType').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   nnExt = b.dataset.ext === '__other' ? ($('#nnOther').value || 'tex') : b.dataset.ext;
+  // keep the placeholder name in step with the type, but never touch a real one
+  if (DEFAULT_NAMES.includes($('#nnName').value.trim())) {
+    $('#nnName').value = nnExt === 'excalidraw' ? 'Untitled drawing' : 'Untitled note';
+  }
   nnRefresh();
   if (b.dataset.ext === '__other') $('#nnOther').focus();
 });
@@ -1401,7 +1546,8 @@ $('#nnName').addEventListener('input', () => {
   nnRefresh();
 });
 
-$('#newNoteBtn').onclick = openNewNote;
+$('#newNoteBtn').onclick = () => openNewNote();
+$('#newDrawBtn').onclick = () => openNewNote('excalidraw');
 $('#nnCancel').onclick = () => { $('#newNote').hidden = true; };
 $('#newNote').addEventListener('click', e => { if (e.target.id === 'newNote') $('#newNote').hidden = true; });
 $('#nnName').addEventListener('keydown', e => {

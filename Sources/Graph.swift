@@ -166,7 +166,10 @@ final class GraphBuilder {
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Double] { return o }
 
         var text = ""
-        if let pdf = PDFDocument(url: Library.shared.pdfPath(doc)) {
+        let isDrawing = Library.kind(doc.ext) == .drawing
+        if isDrawing {
+            text = Converters.drawingText(doc.url)
+        } else if let pdf = PDFDocument(url: Library.shared.pdfPath(doc)) {
             text = String((pdf.string ?? "").prefix(400_000))
         }
         var counts: [String: Int] = [:]
@@ -178,7 +181,8 @@ final class GraphBuilder {
             totalTerms += 1
         }
         guard totalTerms > 0 else { return [:] }
-        let tf = counts.filter { $0.value >= 2 }
+        // A diagram says each thing once; a document repeats what matters.
+        let tf = counts.filter { $0.value >= (isDrawing ? 1 : 2) }
             .mapValues { Double($0) / Double(totalTerms) }
         let trimmed = Dictionary(uniqueKeysWithValues:
             tf.sorted { $0.value > $1.value }.prefix(160).map { ($0.key, $0.value) })

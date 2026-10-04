@@ -50,6 +50,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
         <string>md</string><string>markdown</string><string>mdown</string><string>mkd</string>
         <string>rmd</string>
         <string>ipynb</string>
+        <string>excalidraw</string>
         <string>txt</string><string>tex</string><string>org</string><string>rst</string>
         <string>png</string><string>jpg</string><string>jpeg</string><string>heic</string>
         <string>heif</string><string>gif</string><string>webp</string><string>tiff</string>
