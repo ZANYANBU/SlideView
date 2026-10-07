@@ -1,9 +1,68 @@
-# SlideView
+<h1 align="center">SlideView</h1>
 
-A native macOS viewer for lecture slides. Opens `.pptx` / `.ppt` / `.pdf` / `.docx`
-full-screen with a smart dark mode, built for long revision sessions.
+<p align="center">
+  <b>A native macOS study app: every lecture file in one dark, offline library,<br>
+  with a real Excalidraw board to explain ideas and a map of how your material connects.</b>
+</p>
+
+<p align="center">
+  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000?logo=apple">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-AppKit%20%2B%20WebKit-F05138?logo=swift&logoColor=white">
+  <img alt="Offline" src="https://img.shields.io/badge/100%25-offline-2ea44f">
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue"></a>
+</p>
+
+<p align="center"><img src="docs/library.png" alt="The SlideView library: decks, PDFs and drawings grouped by subject" width="900"></p>
+
+Opens `.pptx` / `.ppt` / `.pdf` / `.docx`, Markdown, notebooks, spreadsheets and
+code full-screen with a smart dark mode, built for long revision sessions.
+No account, no cloud, no telemetry: the app talks only to `127.0.0.1`.
 
 **Install:** `./build.sh` → `~/Applications/SlideView.app` (drag it to the Dock).
+
+If SlideView saves you a late night, a ⭐ helps other students find it.
+
+## Features at a glance
+
+### Smart dark mode that keeps pictures true
+
+Text and vector art are inverted; photographs and diagrams keep their real
+colours, and a red heading stays red. `D` cycles Smart, Invert, Dim and Light.
+
+| Smart | Light (original) |
+|---|---|
+| ![A slide in Smart mode](docs/viewer-smart.png) | ![The same slide in Light mode](docs/viewer-light.png) |
+
+### A drawing board to explain ideas
+
+The real [Excalidraw](https://github.com/excalidraw/excalidraw) editor, embedded
+and offline. Sketch a concept next to the deck it belongs to; the drawing is an
+ordinary `.excalidraw` file in your library. More in [Drawing board](#drawing-board).
+
+<p align="center"><img src="docs/drawing.png" alt="The embedded Excalidraw drawing board" width="900"></p>
+
+### A map of everything you study
+
+Press `M` for a force-directed map: documents that share topics are linked
+automatically, and `[[wikilinks]]` in your notes become edges. More in [Map](#map).
+
+<p align="center"><img src="docs/map.png" alt="Map of documents linked by shared topics" width="900"></p>
+
+### Notes in any format
+
+`⌘N` creates plain text, Markdown, a CSV table or a drawing in any library
+folder, saved as a normal file. More in [Notepad](#notepad).
+
+<p align="center"><img src="docs/new-note.png" alt="The New note sheet with type and folder" width="900"></p>
+
+### And also
+
+- **Tabs**, Chrome-style, each with its own page, zoom, stars and notes
+- **Per-slide notes**, starred slides, text search and a thumbnail rail
+- **Zen mode** (`H`): nothing on screen but the slide
+- **Right-click a slide** to copy it, share it, or send it to Google Lens or Gemini
+- **40+ formats** normalised to PDF once, then cached, so re-opening is instant
+- **Credentials files are never scanned or cached**
 
 ## What it opens
 
