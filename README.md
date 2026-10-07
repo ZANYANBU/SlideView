@@ -6,6 +6,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ZANYANBU/SlideView/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ZANYANBU/SlideView/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ZANYANBU/SlideView/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ZANYANBU/SlideView?color=2ea44f"></a>
   <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000?logo=apple">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-AppKit%20%2B%20WebKit-F05138?logo=swift&logoColor=white">
   <img alt="Offline" src="https://img.shields.io/badge/100%25-offline-2ea44f">
@@ -427,8 +429,14 @@ paints — and the paginator reads `offsetTop`.
                 Markdown, notebooks, code, images), AppKit shell
     web/        UI — index.html, app.css, app.js; draw.html + draw.js for the
                 drawing board; vendored pdf.js and Excalidraw
+    Tests/      XCTest suites: Markdown, converters, scan rules, map links, server
     Tools/      icon generator, and the script that re-vendors Excalidraw
     build.sh    compile + assemble the .app
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+`swift test` runs the tests; they also run on every push, with a full build of the app.
 
 ## Licence
 

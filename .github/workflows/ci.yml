@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Swift version
+        run: swift --version
+      - name: Run tests
+        run: swift test
+
+  build:
+    name: Build the app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build SlideView.app
+        run: ./build.sh
+      - name: Check the bundle
+        run: |
+          APP="$HOME/Applications/SlideView.app"
+          test -x "$APP/Contents/MacOS/SlideView"
+          test -f "$APP/Contents/Resources/web/index.html"
+          test -f "$APP/Contents/Resources/web/vendor/excalidraw/VERSION"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign --verify --deep --strict "$APP"
+      - name: Check the web UI parses
+        run: node --check web/app.js && node --check web/draw.js

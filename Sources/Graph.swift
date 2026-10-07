@@ -138,7 +138,7 @@ final class GraphBuilder {
     }
 
     /// `[[wikilink]]` and `](target)` references.
-    private static func references(in text: String) -> [String] {
+    static func references(in text: String) -> [String] {
         var out: [String] = []
         for pattern in [#"\[\[([^\]|#]+)"#, #"\]\(([^)\s#]+)\)"#] {
             guard let re = try? NSRegularExpression(pattern: pattern) else { continue }

@@ -146,7 +146,7 @@ enum Converters {
                 switch c {
                 case "\"": quoted = true
                 case sep: row.append(field); field = ""
-                case "\n":
+                case "\n", "\r\n":      // "\r\n" is one Character in Swift, not two
                     row.append(field); field = ""
                     rows.append(row); row = []
                 case "\r": break
