@@ -18,7 +18,16 @@ Opens `.pptx` / `.ppt` / `.pdf` / `.docx`, Markdown, notebooks, spreadsheets and
 code full-screen with a smart dark mode, built for long revision sessions.
 No account, no cloud, no telemetry: the app talks only to `127.0.0.1`.
 
-**Install:** `./build.sh` → `~/Applications/SlideView.app` (drag it to the Dock).
+## Install
+
+**[Download SlideView.zip](https://github.com/ZANYANBU/SlideView/releases/latest/download/SlideView.zip)**,
+unzip it and drag **SlideView.app** to Applications. Apple Silicon, macOS 13 or later.
+
+> **First launch:** the app is not notarised by Apple, so macOS blocks it once. Open
+> **System Settings → Privacy & Security**, scroll down and click **Open Anyway**,
+> or run `xattr -dr com.apple.quarantine /Applications/SlideView.app`.
+
+Or build it yourself: `./build.sh` → `~/Applications/SlideView.app`.
 
 If SlideView saves you a late night, a ⭐ helps other students find it.
 
