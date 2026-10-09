@@ -14,6 +14,8 @@
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue"></a>
 </p>
 
+<p align="center"><b><a href="https://zanyanbu.github.io/SlideView/">Website</a></b> · <b><a href="https://github.com/ZANYANBU/SlideView/releases/latest/download/SlideView.zip">Download for Mac</a></b></p>
+
 <p align="center"><img src="docs/library.png" alt="The SlideView library: decks, PDFs and drawings grouped by subject" width="900"></p>
 
 Opens `.pptx` / `.ppt` / `.pdf` / `.docx`, Markdown, notebooks, spreadsheets and
