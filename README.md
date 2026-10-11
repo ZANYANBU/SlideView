@@ -140,6 +140,26 @@ node, repulsion uses a distance cutoff so the layout does not crawl, the subject
 legend hides behind a button, and a click only opens a document if the pointer
 did not move — dragging a node used to open it by accident.
 
+## Ask
+
+Press `A` in the library and type a question. SlideView looks through every page of every
+document and shows the passages that match best; click one to open that page.
+
+On a Mac with Apple Intelligence switched on (macOS 26 or later), it also writes a short
+answer from those passages using Apple's on-device model, with a `[1]`-style marker after each
+fact that points at the passage it came from. Without it, you still get the passages.
+
+- **Nothing leaves the Mac.** The search is plain keyword ranking (BM25) done in the app, and
+  the model is the one built into macOS. There is no account and no network call.
+- **It answers only from your material.** The model is told to say so when the passages do not
+  contain the answer, but a small model can still misread, so check the page it cites.
+- **Sensitive files are left out**, the same as everywhere else in the app.
+- **Matching is by words, not meaning.** "TCP handshake" finds the slide that says those words;
+  a question phrased with none of the slide's words will miss it.
+
+The passages of each document are cached under Application Support and reread only when the
+file changes.
+
 ## Prior art, and why none of it is vendored
 
 Worth stating plainly, because it constrains what this repo can contain:

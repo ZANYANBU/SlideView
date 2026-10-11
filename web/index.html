@@ -35,6 +35,7 @@
     <div class="sidebar-foot">
       <label class="opt"><input type="checkbox" id="optImages"><span>Include images</span></label>
       <div class="kbd-row"><kbd>M</kbd><span>Map</span></div>
+      <div class="kbd-row"><kbd>A</kbd><span>Ask</span></div>
       <div class="kbd-row"><kbd>⌘R</kbd><span>Rescan</span></div>
     </div>
   </aside>
@@ -48,6 +49,10 @@
       <button id="mapBtn" class="btn map-btn" title="Map of your material (M)">
         <svg viewBox="0 0 16 16" width="13" height="13"><circle cx="4" cy="4" r="2" fill="currentColor"/><circle cx="12" cy="6" r="1.6" fill="currentColor"/><circle cx="7" cy="12" r="1.8" fill="currentColor"/><path stroke="currentColor" stroke-width="1.1" fill="none" d="M5.6 5 10.6 5.7M5 5.8 6.4 10.2M8.6 10.9 11.2 7.4"/></svg>
         Map
+      </button>
+      <button id="askBtn" class="btn map-btn" title="Ask your material (A)">
+        <svg viewBox="0 0 16 16" width="13" height="13"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>
+        Ask
       </button>
       <button id="newNoteBtn" class="btn hdr-btn" title="New note (⌘N)">
         <svg viewBox="0 0 16 16" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M8 3.6v8.8M3.6 8h8.8"/></svg>
@@ -189,6 +194,26 @@
   </div>
 
 </div>
+
+  <!-- ─────────────────────────  ASK  ───────────────────────── -->
+  <div id="brain" class="screen" hidden>
+    <div class="graph-bar">
+      <button id="brainBack" class="icon-btn" title="Library (Esc)">
+        <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9.5 3.5 5 8l4.5 4.5"/></svg>
+      </button>
+      <div class="graph-title">Ask your material<span id="brainSub" class="graph-sub"></span></div>
+    </div>
+    <div class="brain-body">
+      <form id="brainForm" class="brain-form">
+        <input id="brainInput" class="brain-input" type="text" placeholder="Ask a question" autocomplete="off" spellcheck="false" maxlength="600">
+        <button class="btn primary" type="submit">Ask</button>
+      </form>
+      <div id="brainNote" class="brain-note" hidden></div>
+      <div id="brainBusy" class="brain-busy" hidden><div class="spinner"></div><span id="brainBusyText"></span></div>
+      <div id="brainAnswer" class="brain-answer" hidden></div>
+      <div id="brainSources" class="brain-sources"></div>
+    </div>
+  </div>
 
   <!-- ─────────────────────────  MAP  ───────────────────────── -->
   <div id="graph" class="screen" hidden>

@@ -107,6 +107,7 @@ final class Library {
         set {
             UserDefaults.standard.set(newValue, forKey: "scanImages")
             GraphBuilder.shared.invalidate()
+            Brain.shared.invalidate()
         }
     }
 
@@ -167,6 +168,7 @@ final class Library {
         lock.unlock()
         UserDefaults.standard.set(snapshot.map(\.path), forKey: "libraryRoots")
         GraphBuilder.shared.invalidate()
+        Brain.shared.invalidate()
     }
 
     func removeRoot(_ path: String) {
@@ -176,6 +178,7 @@ final class Library {
         lock.unlock()
         UserDefaults.standard.set(snapshot.map(\.path), forKey: "libraryRoots")
         GraphBuilder.shared.invalidate()
+        Brain.shared.invalidate()
     }
 
     // MARK: - Scanning
@@ -254,6 +257,7 @@ final class Library {
         lock.unlock()
         _ = refresh(id)
         GraphBuilder.shared.invalidate()
+        Brain.shared.invalidate()
         return true
     }
 
@@ -347,6 +351,7 @@ final class Library {
             _ = adopt(dst)
         }
         GraphBuilder.shared.invalidate()
+        Brain.shared.invalidate()
         return (newID, dst.deletingPathExtension().lastPathComponent)
     }
 
@@ -365,6 +370,7 @@ final class Library {
         lock.unlock()
         saveAdopted()
         GraphBuilder.shared.invalidate()
+        Brain.shared.invalidate()
         return true
     }
 

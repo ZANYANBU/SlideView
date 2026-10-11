@@ -358,6 +358,7 @@ function showScreen(which) {
   $('#viewer').hidden = which !== 'viewer';
   $('#editor').hidden = which !== 'editor';
   $('#graph').hidden = which !== 'graph';
+  $('#brain').hidden = which !== 'brain';
   $('#draw').hidden = which !== 'draw';
   document.body.dataset.screen = which;
   if (was === 'draw' && which !== 'draw') leaveDrawing();
@@ -1048,6 +1049,7 @@ addEventListener('keydown', e => {
     if (document.body.dataset.screen === 'viewer') return toLibrary();
     if (document.body.dataset.screen === 'editor') { flushEditor(); return toLibrary(); }
     if (document.body.dataset.screen === 'graph') return toLibrary();
+    if (document.body.dataset.screen === 'brain') return toLibrary();
     if (document.body.dataset.screen === 'draw') return toLibrary();
     if (cur) { showScreen('viewer'); renderTabs(); }
     return;
@@ -1076,6 +1078,7 @@ addEventListener('keydown', e => {
     if (e.key === 'Enter') { const f = $('#grid .card'); if (f) openDoc(f.dataset.id); }
     if (e.key === '?') $('#help').hidden = false;
     if (e.key === 'm' || e.key === 'M') openMap();
+    if (e.key === 'a' || e.key === 'A') { e.preventDefault(); openAsk(); }
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1933,3 +1936,91 @@ addEventListener('keydown', e => {
 new ResizeObserver(() => { if (!$('#graph').hidden) sizeCanvas(); }).observe($('#graph'));
 COMMANDS.map = () => openMap();
 COMMANDS.fitMap = () => fit(40);
+
+/* ════════════════════════════  ask  ════════════════════════════ */
+/* A question goes to /api/brain/ask, which ranks every page of the library
+   against it and, where this Mac has Apple's on-device model, writes an answer
+   from the best ones. The passages always come back, so each claim can be
+   checked against the slide it came from. */
+const ASK = { busy: false, poll: null };
+
+function openAsk() {
+  showScreen('brain');
+  $('#brainInput').focus();
+  askStatus();
+}
+
+async function askStatus() {
+  clearTimeout(ASK.poll);
+  if ($('#brain').hidden) return;
+  let s;
+  try { s = await (await fetch('/api/brain')).json(); } catch { return; }
+  if (!s.ready) {
+    $('#brainSub').textContent = s.total ? `Reading ${s.progress} of ${s.total} documents` : 'Reading your material';
+    ASK.poll = setTimeout(askStatus, 700);
+    return;
+  }
+  $('#brainSub').textContent = `${s.documents} documents · ${s.passages} passages`;
+  const note = $('#brainNote');
+  note.hidden = s.model;
+  if (!s.model) note.textContent = `Showing matching passages only. ${s.modelNote}`;
+}
+
+function renderAnswer(r) {
+  const answer = $('#brainAnswer'), list = $('#brainSources');
+  answer.hidden = !r.answer;
+  if (r.answer) {
+    answer.innerHTML = esc(r.answer).replace(/\[(\d+)\]/g, (m, n) =>
+      r.sources.some(x => x.n === +n) ? `<span class="cite" data-n="${n}">[${n}]</span>` : m);
+  }
+  if (!r.sources.length) {
+    list.innerHTML = '<div class="brain-heading">Nothing in your material matches that</div>';
+    return;
+  }
+  list.innerHTML = `<div class="brain-heading">${r.answer ? 'From' : 'Best matches'}</div>` + r.sources.map(x => `
+    <button class="brain-source" data-n="${x.n}" data-id="${esc(x.id)}" data-page="${x.page}">
+      <div class="where">[${x.n}] ${esc(x.name)} · page ${x.page}</div>
+      <div class="text">${esc(x.text)}</div>
+    </button>`).join('');
+}
+
+async function ask(question) {
+  if (ASK.busy || !question) return;
+  ASK.busy = true;
+  $('#brainAnswer').hidden = true;
+  $('#brainSources').innerHTML = '';
+  $('#brainBusy').hidden = false;
+  try {
+    for (;;) {
+      $('#brainBusyText').textContent = 'Looking through your material';
+      const r = await (await fetch('/api/brain/ask', { method: 'POST', body: JSON.stringify({ q: question }) })).json();
+      if (r.ready) { renderAnswer(r); break; }
+      $('#brainBusyText').textContent = r.total ? `Reading ${r.progress} of ${r.total} documents` : 'Reading your material';
+      await new Promise(done => setTimeout(done, 700));
+      if ($('#brain').hidden) break;
+    }
+  } catch {
+    toast('Could not ask');
+  } finally {
+    ASK.busy = false;
+    $('#brainBusy').hidden = true;
+    askStatus();
+  }
+}
+
+$('#askBtn').onclick = () => openAsk();
+$('#brainBack').onclick = () => toLibrary();
+$('#brainForm').addEventListener('submit', e => { e.preventDefault(); ask($('#brainInput').value.trim()); });
+$('#brainSources').addEventListener('click', async e => {
+  const b = e.target.closest('.brain-source');
+  if (!b) return;
+  await openDoc(b.dataset.id, { preview: true });
+  if (cur && cur.docId === b.dataset.id) show(+b.dataset.page);
+});
+$('#brainAnswer').addEventListener('click', e => {
+  const c = e.target.closest('.cite');
+  if (!c) return;
+  $$('.brain-source').forEach(x => x.classList.toggle('on', x.dataset.n === c.dataset.n));
+  const hit = $(`.brain-source[data-n="${c.dataset.n}"]`);
+  if (hit) hit.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+});

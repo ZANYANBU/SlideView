@@ -138,6 +138,17 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         if let v = req.query["images"] { Library.scanImages = (v == "1") }
         return .json(["scanImages": Library.scanImages])
 
+    case "/api/brain":
+        let brain = Brain.shared
+        brain.build()
+        return .json(brain.status())
+
+    case "/api/brain/ask":
+        let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any]
+        let question = ((body?["q"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return .json(["error": "no question"], status: 400) }
+        return .json(Brain.shared.ask(String(question.prefix(600))))
+
     case "/api/graph":
         let g = GraphBuilder.shared
         g.build(force: req.query["rebuild"] == "1")
