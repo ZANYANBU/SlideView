@@ -163,11 +163,43 @@ struct PassageIndex {
 
 enum BrainPrompt {
     static let instructions = """
-        You help a student revise from their own study material. Answer the question using \
-        only the numbered notes you are given. After each fact, cite the note it came from \
-        like [1]. If the notes do not contain the answer, say you could not find it in their \
-        material and do not guess. Keep the answer short and plain.
+        You help a student revise from their own study material. Speak to them as "you". \
+        Answer the question using only the numbered notes you are given, in a few plain \
+        sentences. After each fact, cite the note it came from, like [1]. The only valid \
+        citations are the note numbers shown in square brackets at the start of each note; \
+        numbers inside a note's text are part of the slide, not citations. Some notes are \
+        labels lifted off a diagram in no particular order: do not guess which label goes \
+        with which. If the notes do not clearly state the answer, reply only: "I could not \
+        find that in your material." Do not guess and do not use outside knowledge.
         """
+
+    /// Removes citation markers that point at no note, which a small model sometimes
+    /// copies from list numbers inside a slide.
+    static func tidy(_ answer: String, notes: Int) -> String {
+        var out = ""
+        var rest = Substring(answer)
+        while let open = rest.firstIndex(of: "[") {
+            out += rest[..<open]
+            let after = rest[rest.index(after: open)...]
+            if let close = after.firstIndex(of: "]"), let n = Int(after[..<close]) {
+                if n >= 1 && n <= notes { out += "[\(n)]" } else if out.hasSuffix(" ") { out.removeLast() }
+                rest = after[after.index(after: close)...]
+            } else {
+                out += "["
+                rest = after
+            }
+        }
+        var text = out + rest
+        for (left, right) in [(",.", "."), (", ,", ","), (",,", ","), (" .", "."), (":.", ".")] {
+            text = text.replacingOccurrences(of: left, with: right)
+        }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // "Not found" needs no citation after it.
+        if text.count < 80, text.lowercased().contains(notFound.lowercased().dropLast()) { return notFound }
+        return text
+    }
+
+    static let notFound = "I could not find that in your material."
 
     /// The notes and the question as one prompt. `budget` caps the characters of
     /// notes so the whole thing fits a small model's context.
@@ -346,8 +378,9 @@ final class Brain {
 
         let notes = hits.map { (title: names[$0.passage.doc] ?? "Document", page: $0.passage.page, text: $0.passage.text) }
         do {
-            out["answer"] = try OnDeviceModel.answer(instructions: BrainPrompt.instructions,
-                                                     prompt: BrainPrompt.build(question: question, notes: notes))
+            let raw = try OnDeviceModel.answer(instructions: BrainPrompt.instructions,
+                                               prompt: BrainPrompt.build(question: question, notes: notes))
+            out["answer"] = BrainPrompt.tidy(raw, notes: notes.count)
         } catch {
             out["modelNote"] = "The model could not answer: \(error.localizedDescription)"
         }

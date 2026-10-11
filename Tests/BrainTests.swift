@@ -82,6 +82,17 @@ final class BrainTests: XCTestCase {
         XCTAssertFalse(prompt.contains("[3] Deck"), "notes past the budget are left out")
     }
 
+    func testTidyDropsCitationsThatPointAtNoNote() {
+        XCTAssertEqual(BrainPrompt.tidy("A DFA is deterministic [1]. NFAs differ [9].", notes: 5),
+                       "A DFA is deterministic [1]. NFAs differ.")
+        XCTAssertEqual(BrainPrompt.tidy("Both hold [2], [10].", notes: 3), "Both hold [2].")
+        XCTAssertEqual(BrainPrompt.tidy("An array a[i] and a set [x, y] stay [3]", notes: 3),
+                       "An array a[i] and a set [x, y] stay [3]")
+        XCTAssertEqual(BrainPrompt.tidy("  no citations here  ", notes: 2), "no citations here")
+        XCTAssertEqual(BrainPrompt.tidy("unclosed [ bracket [1]", notes: 1), "unclosed [ bracket [1]")
+        XCTAssertEqual(BrainPrompt.tidy("I could not find that in your material. [1]", notes: 5), BrainPrompt.notFound)
+    }
+
     func testModelStateAlwaysExplainsItself() {
         let state = OnDeviceModel.state
         XCTAssertEqual(state.ready, state.reason.isEmpty, "a reason is given exactly when the model is not ready")
