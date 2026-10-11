@@ -142,6 +142,10 @@ did not move — dragging a node used to open it by accident.
 
 ## Ask
 
+> **In progress.** The assistant lives on the
+> [`apple-intelligence-assistant`](https://github.com/ZANYANBU/SlideView/tree/apple-intelligence-assistant)
+> branch and is not in a release yet. Build that branch with `./build.sh` to try it.
+
 Press `A` in the library for the assistant. It answers from your own decks and notes, and every
 answer shows the page it came from. Nothing leaves the Mac.
 
@@ -194,6 +198,28 @@ in `passages/` and redone only when the file changes.
 - **Sensitive files are never read**, the same as everywhere else in the app.
 
 From the map, shift-click a deck to ask for its study guide.
+
+### Scope for improvement
+
+Roughly in the order I would take them:
+
+- **Read diagrams.** Give the model the slide as a picture when its text is only labels, so it
+  stops guessing which label belongs to which part.
+- **A better meaning model.** The system's text model is weak at telling topics apart. A purpose-built
+  embedding model would let the vector search carry more of the ranking.
+- **Stream the answer.** Answers arrive all at once after 8 to 30 seconds. Showing the words as
+  they are written would make the wait feel shorter.
+- **Longer study guides, faster.** A guide covers six decks at most and takes up to a minute,
+  because each deck is a separate request to the model.
+- **Cite memory as memory.** A fact the assistant remembered is sometimes given a slide's marker.
+- **Check the answer against its sources.** A second pass that drops any sentence the cited
+  passage does not support.
+- **Quiz mode.** Questions made from a deck, marked against the page they came from.
+- **Compare models properly.** A fixed set of questions with known answers, run against Apple's
+  model and each Ollama model, so the choice is measured and not guessed.
+- **Tables and formulas.** They are skipped in favour of prose today; they should be read as
+  tables and formulas.
+- **Other languages.** Search and the meaning model assume English.
 
 ## Prior art, and why none of it is vendored
 
