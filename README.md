@@ -140,6 +140,18 @@ node, repulsion uses a distance cutoff so the layout does not crawl, the subject
 legend hides behind a button, and a click only opens a document if the pointer
 did not move — dragging a node used to open it by accident.
 
+## In progress: an assistant that answers from your material
+
+On the [`apple-intelligence-assistant`](https://github.com/ZANYANBU/SlideView/tree/apple-intelligence-assistant)
+branch, pressing `A` opens an assistant that answers questions from your own decks, writes
+study guides for a subject, keeps your chats and remembers what you tell it. It runs on the Mac
+itself, with Apple's on-device model or any Ollama model, and every answer shows the page it came
+from. It is not in a release yet: small models still misread diagrams and pad answers. The
+branch's README lists how it works and what is left to improve. To try it:
+
+    git checkout apple-intelligence-assistant
+    ./build.sh
+
 ## Prior art, and why none of it is vendored
 
 Worth stating plainly, because it constrains what this repo can contain:
