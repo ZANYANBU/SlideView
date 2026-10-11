@@ -58,6 +58,22 @@ enum BrainText {
         return w
     }
 
+    /// How much of a passage reads as sentences, from 0 (a table, a formula, loose
+    /// diagram labels) to 1 (plain prose). A question is better answered by the page
+    /// that explains than by the page that tabulates.
+    static func prose(_ text: String) -> Double {
+        let words = text.split(whereSeparator: { $0.isWhitespace })
+        guard words.count >= 4 else { return 0.3 }
+        let plain = words.filter { w in
+            let letters = w.filter { $0.isLetter }.count
+            return letters >= 2 && letters * 10 >= w.count * 8
+        }.count
+        let share = Double(plain) / Double(words.count)
+        let sentences = text.filter { ".?!".contains($0) }.count
+        let flow = min(1, Double(sentences) * 12 / Double(words.count))   // about one stop per dozen words
+        return max(0, min(1, share * (0.6 + 0.4 * flow)))
+    }
+
     /// Cut a page into passages of about `limit` characters, breaking at blank
     /// lines, then line ends, then sentence ends, so a passage reads as a unit.
     static func split(_ text: String, limit: Int = 900) -> [String] {
@@ -117,37 +133,46 @@ struct PassageIndex {
     let passages: [Passage]
     private var postings: [String: [(index: Int, count: Double)]] = [:]
     private var lengths: [Double] = []
+    private var prose: [Double] = []
     private var averageLength: Double = 1
 
-    init(_ passages: [Passage]) {
+    /// `titles` maps a document id to its name, so a question that names a deck finds it.
+    init(_ passages: [Passage], titles: [String: String] = [:]) {
         self.passages = passages
         lengths.reserveCapacity(passages.count)
         var total = 0.0
         for (i, p) in passages.enumerated() {
-            let words = BrainText.tokens(p.text)
+            let words = BrainText.tokens(p.text) + BrainText.tokens(titles[p.doc] ?? "")
             var counts: [String: Double] = [:]
             for w in words { counts[w, default: 0] += 1 }
             for (w, c) in counts { postings[w, default: []].append((i, c)) }
             lengths.append(Double(words.count))
+            prose.append(BrainText.prose(p.text))
             total += Double(words.count)
         }
         averageLength = passages.isEmpty ? 1 : max(1, total / Double(passages.count))
     }
 
     /// The passages that best match `query`, best first, at most one per page so
-    /// a single wordy page cannot fill the whole answer.
-    func search(_ query: String, limit: Int = 5) -> [(passage: Passage, score: Double)] {
+    /// a single wordy page cannot fill the whole answer. `related` are other words
+    /// for the same idea; they count for half. Pages that read as prose are
+    /// preferred over tables and loose labels.
+    func search(_ query: String, related: [String] = [], limit: Int = 5) -> [(passage: Passage, score: Double)] {
         let k1 = 1.5, b = 0.75
         let n = Double(passages.count)
+        var weights: [String: Double] = [:]
+        for term in BrainText.tokens(related.joined(separator: " ")) { weights[term] = 0.5 }
+        for term in BrainText.tokens(query) { weights[term] = 1 }
         var scores: [Int: Double] = [:]
-        for term in Set(BrainText.tokens(query)) {
+        for (term, weight) in weights {
             guard let hits = postings[term] else { continue }
             let idf = log(1 + (n - Double(hits.count) + 0.5) / (Double(hits.count) + 0.5))
             for h in hits {
                 let norm = h.count + k1 * (1 - b + b * lengths[h.index] / averageLength)
-                scores[h.index, default: 0] += idf * h.count * (k1 + 1) / norm
+                scores[h.index, default: 0] += weight * idf * h.count * (k1 + 1) / norm
             }
         }
+        for i in scores.keys { scores[i]! *= 0.2 + 0.8 * prose[i] }
         var seen = Set<String>()
         var out: [(Passage, Double)] = []
         for (i, s) in scores.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) {
@@ -200,6 +225,32 @@ enum BrainPrompt {
     }
 
     static let notFound = "I could not find that in your material."
+
+    /// Asks the model for other words a slide might use for the same idea, so a
+    /// question about "DFA" also finds the page that says "deterministic automaton".
+    static let related = """
+        A student is searching their lecture slides. For the question you are given, list up \
+        to eight other words or short phrases a slide about it would likely contain: full \
+        forms of abbreviations, synonyms and closely related technical terms. Reply with the \
+        list only, separated by commas, with no explanation.
+        """
+
+    /// The model's comma-separated reply as clean terms, capped so a rambling reply
+    /// cannot swamp the question's own words.
+    static func terms(_ reply: String, limit: Int = 8) -> [String] {
+        reply.split(whereSeparator: { ",;\n".contains($0) })
+            .map { $0.trimmingCharacters(in: CharacterSet.alphanumerics.inverted) }
+            .filter { $0.count >= 2 && $0.count <= 40 }
+            .prefix(limit).map { $0 }
+    }
+
+    /// Used when no page matches at all, for a greeting or a general question.
+    static let smallTalk = """
+        You are the study assistant inside SlideView, a Mac app that holds a student's lecture \
+        files. Nothing in their files matched what they just typed. If it is a greeting or small \
+        talk, reply warmly in one sentence and invite a question about their material. If it is \
+        a real question, answer briefly from general knowledge in at most three sentences.
+        """
 
     /// The notes and the question as one prompt. `budget` caps the characters of
     /// notes so the whole thing fits a small model's context.
@@ -279,6 +330,7 @@ final class Brain {
     private let lock = NSLock()
     private var index: PassageIndex?
     private var names: [String: String] = [:]
+    private var suggestions: [String] = []
     private var building = false
     private var done = 0, total = 0
     private let queue = DispatchQueue(label: "slideview.brain")
@@ -299,7 +351,11 @@ final class Brain {
         let model = OnDeviceModel.state
         var out: [String: Any] = ["ready": index != nil, "progress": done, "total": total,
                                   "model": model.ready, "modelNote": model.reason]
-        if let index { out["passages"] = index.passages.count; out["documents"] = names.count }
+        if let index {
+            out["passages"] = index.passages.count
+            out["documents"] = names.count
+            out["suggestions"] = suggestions
+        }
         return out
     }
 
@@ -313,6 +369,7 @@ final class Brain {
             let (built, names) = self.read()
             self.lock.lock()
             self.index = built; self.names = names; self.building = false
+            self.suggestions = Brain.suggest(built.passages, names)
             self.lock.unlock()
         }
     }
@@ -345,7 +402,17 @@ final class Brain {
             all.append(contentsOf: passages)
             lock.lock(); done += 1; lock.unlock()
         }
-        return (PassageIndex(all), names)
+        return (PassageIndex(all, titles: names), names)
+    }
+
+    /// A few decks to offer as starting questions: the ones with the most to say.
+    static func suggest(_ passages: [Passage], _ names: [String: String], count: Int = 4) -> [String] {
+        var size: [String: Int] = [:]
+        for p in passages { size[p.doc, default: 0] += 1 }
+        return size.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .compactMap { names[$0.key] }
+            .map { ($0 as NSString).deletingPathExtension.replacingOccurrences(of: "_", with: " ") }
+            .prefix(count).map { $0 }
     }
 
     private func dropStale(_ id: String) {
@@ -365,16 +432,29 @@ final class Brain {
             return s
         }
 
-        let hits = index.search(question, limit: 5)
+        let model = OnDeviceModel.state
+        var related: [String] = []
+        if model.ready, BrainText.tokens(question).count >= 2,
+           let reply = try? OnDeviceModel.answer(instructions: BrainPrompt.related, prompt: question) {
+            related = BrainPrompt.terms(reply)
+        }
+        let hits = index.search(question, related: related, limit: 5)
         let sources: [[String: Any]] = hits.enumerated().map { i, h in
             ["n": i + 1, "id": h.passage.doc, "name": names[h.passage.doc] ?? "Document",
              "page": h.passage.page, "text": h.passage.text]
         }
-        var out: [String: Any] = ["ready": true, "sources": sources, "answer": NSNull()]
-        let model = OnDeviceModel.state
+        var out: [String: Any] = ["ready": true, "sources": sources, "answer": NSNull(), "related": related]
         out["model"] = model.ready
         out["modelNote"] = model.reason
-        guard model.ready, !hits.isEmpty else { return out }
+        out["grounded"] = !hits.isEmpty
+        guard model.ready else { return out }
+        if hits.isEmpty {
+            // Nothing matched: let the model reply, clearly marked as not from the library.
+            if let reply = try? OnDeviceModel.answer(instructions: BrainPrompt.smallTalk, prompt: question) {
+                out["answer"] = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return out
+        }
 
         let notes = hits.map { (title: names[$0.passage.doc] ?? "Document", page: $0.passage.page, text: $0.passage.text) }
         do {

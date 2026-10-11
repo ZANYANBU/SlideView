@@ -1029,6 +1029,15 @@ $('#stage').addEventListener('wheel', e => {
 
 function toLibrary() {
   S.token++;
+  // A page opened from an answer goes back to that answer, not to the library.
+  if (ASK.from && document.body.dataset.screen === 'viewer') {
+    ASK.from = false;
+    closePanels();
+    showScreen('brain');
+    send('title', { text: 'SlideView' });
+    return;
+  }
+  ASK.from = false;
   showScreen('library');
   send('title', { text: 'SlideView' });
   closePanels();
@@ -1941,8 +1950,8 @@ COMMANDS.fitMap = () => fit(40);
 /* A question goes to /api/brain/ask, which ranks every page of the library
    against it and, where this Mac has Apple's on-device model, writes an answer
    from the best ones. The passages always come back, so each claim can be
-   checked against the slide it came from. */
-const ASK = { busy: false, poll: null };
+   checked against the slide it came from. The thread lives only in memory. */
+const ASK = { busy: false, poll: null, turns: 0, model: false, from: false };
 
 function openAsk() {
   showScreen('brain');
@@ -1960,50 +1969,119 @@ async function askStatus() {
     ASK.poll = setTimeout(askStatus, 700);
     return;
   }
+  ASK.model = s.model;
   $('#brainSub').textContent = `${s.documents} documents · ${s.passages} passages`;
-  const note = $('#brainNote');
-  note.hidden = s.model;
-  if (!s.model) note.textContent = `Showing matching passages only. ${s.modelNote}`;
+  $('#brainModel').textContent = s.model
+    ? 'Answers are written on this Mac by Apple Intelligence. Check the page each one cites.'
+    : `Showing matching passages only. ${s.modelNote}`;
+  if (!$('#brainChips').children.length) {
+    $('#brainChips').innerHTML = (s.suggestions || []).map(n =>
+      `<button class="brain-chip" type="button" data-q="${esc('What are the key points of ' + n + '?')}">${esc(n)}</button>`).join('');
+  }
 }
 
-function renderAnswer(r) {
-  const answer = $('#brainAnswer'), list = $('#brainSources');
-  answer.hidden = !r.answer;
-  if (r.answer) {
-    answer.innerHTML = esc(r.answer).replace(/\[(\d+)\]/g, (m, n) =>
-      r.sources.some(x => x.n === +n) ? `<span class="cite" data-n="${n}">[${n}]</span>` : m);
+/* The model writes plain text with the odd list. Turn that into paragraphs and
+   lists, make **bold** bold, and make each [n] a chip that points at its source. */
+function formatAnswer(text, sources) {
+  const inline = t => esc(t)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (m, list) => {
+      const ns = list.split(',').map(x => +x.trim()).filter(n => sources.some(s => s.n === n));
+      return ns.map(n => `<span class="cite" data-n="${n}" title="Show passage ${n}">${n}</span>`).join('');
+    });
+  const out = [];
+  let list = null;
+  const close = () => { if (list) { out.push(`<${list.tag}>${list.items.join('')}</${list.tag}>`); list = null; } };
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) { close(); continue; }
+    const num = line.match(/^\d+[.)]\s+(.*)$/), dash = line.match(/^[-*•]\s+(.*)$/);
+    if (num || dash) {
+      const tag = num ? 'ol' : 'ul';
+      if (!list || list.tag !== tag) { close(); list = { tag, items: [] }; }
+      list.items.push(`<li>${inline((num || dash)[1])}</li>`);
+    } else { close(); out.push(`<p>${inline(line)}</p>`); }
   }
-  if (!r.sources.length) {
-    list.innerHTML = '<div class="brain-heading">Nothing in your material matches that</div>';
-    return;
-  }
-  list.innerHTML = `<div class="brain-heading">${r.answer ? 'From' : 'Best matches'}</div>` + r.sources.map(x => `
-    <button class="brain-source" data-n="${x.n}" data-id="${esc(x.id)}" data-page="${x.page}">
-      <div class="where">[${x.n}] ${esc(x.name)} · page ${x.page}</div>
+  close();
+  return out.join('');
+}
+
+function sourceCards(sources) {
+  return sources.map(x => `
+    <button class="brain-source" type="button" data-n="${x.n}" data-id="${esc(x.id)}" data-page="${x.page}" title="Open this page">
+      <div class="where"><b>${x.n}</b><span>${esc(x.name.replace(/\.[a-z0-9]+$/i, ''))}</span><i>p. ${x.page}</i></div>
       <div class="text">${esc(x.text)}</div>
     </button>`).join('');
+}
+
+function renderTurn(card, r, seconds) {
+  const sources = r.sources || [];
+  let body;
+  if (r.answer) {
+    body = (r.grounded === false ? '<div class="tag">Not from your material</div>' : '') +
+      `<div class="turn-text">${formatAnswer(r.answer, sources)}</div>`;
+  } else if (sources.length) {
+    body = `<div class="turn-text muted">These pages match best. ${esc(r.modelNote || '')}</div>`;
+  } else {
+    body = '<div class="turn-text muted">Nothing in your material matches that. Try the words a slide would use.</div>';
+  }
+  const open = !r.answer && sources.length > 0;
+  const meta = [];
+  if (sources.length) meta.push(`<button class="brain-link" type="button" data-act="sources">${open ? 'Hide' : 'Show'} ${sources.length} passage${sources.length > 1 ? 's' : ''}</button>`);
+  meta.push('<span class="grow"></span>');
+  if (r.answer) meta.push(`<span>${seconds} s on this Mac</span>`, '<button class="brain-link" type="button" data-act="copy">Copy</button>');
+  card.innerHTML = body +
+    (sources.length ? `<div class="turn-sources"${open ? '' : ' hidden'}>${sourceCards(sources)}</div>` : '') +
+    (sources.length || r.answer ? `<div class="turn-meta">${meta.join('')}</div>` : '');
+  card.dataset.answer = r.answer || '';
+}
+
+function scrollAsk() {
+  const box = $('#brainScroll');
+  box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
 }
 
 async function ask(question) {
   if (ASK.busy || !question) return;
   ASK.busy = true;
-  $('#brainAnswer').hidden = true;
-  $('#brainSources').innerHTML = '';
-  $('#brainBusy').hidden = false;
+  ASK.turns++;
+  $('#brainSend').disabled = true;
+  $('#brainEmpty').hidden = true;
+  $('#brainClear').hidden = false;
+  $('#brainInput').value = '';
+
+  const thread = $('#brainThread');
+  const q = document.createElement('div');
+  q.className = 'turn-q';
+  q.textContent = question;
+  const card = document.createElement('div');
+  card.className = 'turn-a';
+  card.innerHTML = '<div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="why">Looking through your material</span></div>';
+  thread.append(q, card);
+  scrollAsk();
+
+  const started = performance.now();
+  const hint = setTimeout(() => {
+    const why = card.querySelector('.why');
+    if (why && ASK.model) why.textContent = 'Writing an answer on this Mac';
+  }, 1200);
   try {
     for (;;) {
-      $('#brainBusyText').textContent = 'Looking through your material';
       const r = await (await fetch('/api/brain/ask', { method: 'POST', body: JSON.stringify({ q: question }) })).json();
-      if (r.ready) { renderAnswer(r); break; }
-      $('#brainBusyText').textContent = r.total ? `Reading ${r.progress} of ${r.total} documents` : 'Reading your material';
+      if (r.ready) { renderTurn(card, r, Math.max(1, Math.round((performance.now() - started) / 1000))); break; }
+      const why = card.querySelector('.why');
+      if (why) why.textContent = r.total ? `Reading ${r.progress} of ${r.total} documents` : 'Reading your material';
       await new Promise(done => setTimeout(done, 700));
       if ($('#brain').hidden) break;
     }
   } catch {
-    toast('Could not ask');
+    card.innerHTML = '<div class="turn-text muted">Something went wrong asking that. Try again.</div>';
   } finally {
+    clearTimeout(hint);
     ASK.busy = false;
-    $('#brainBusy').hidden = true;
+    $('#brainSend').disabled = false;
+    scrollAsk();
+    if (!$('#brain').hidden) $('#brainInput').focus();
     askStatus();
   }
 }
@@ -2011,16 +2089,43 @@ async function ask(question) {
 $('#askBtn').onclick = () => openAsk();
 $('#brainBack').onclick = () => toLibrary();
 $('#brainForm').addEventListener('submit', e => { e.preventDefault(); ask($('#brainInput').value.trim()); });
-$('#brainSources').addEventListener('click', async e => {
-  const b = e.target.closest('.brain-source');
-  if (!b) return;
-  await openDoc(b.dataset.id, { preview: true });
-  if (cur && cur.docId === b.dataset.id) show(+b.dataset.page);
+$('#brainChips').addEventListener('click', e => {
+  const chip = e.target.closest('.brain-chip');
+  if (chip) ask(chip.dataset.q);
 });
-$('#brainAnswer').addEventListener('click', e => {
-  const c = e.target.closest('.cite');
-  if (!c) return;
-  $$('.brain-source').forEach(x => x.classList.toggle('on', x.dataset.n === c.dataset.n));
-  const hit = $(`.brain-source[data-n="${c.dataset.n}"]`);
-  if (hit) hit.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+$('#brainClear').onclick = () => {
+  if (ASK.busy) return;
+  $('#brainThread').innerHTML = '';
+  $('#brainEmpty').hidden = false;
+  $('#brainClear').hidden = true;
+  $('#brainInput').focus();
+};
+$('#brainThread').addEventListener('click', async e => {
+  const card = e.target.closest('.turn-a');
+  if (!card) return;
+  const source = e.target.closest('.brain-source');
+  if (source) {
+    await openDoc(source.dataset.id, { preview: true });
+    if (cur && cur.docId === source.dataset.id) { show(+source.dataset.page); ASK.from = true; }
+    return;
+  }
+  const cite = e.target.closest('.cite');
+  const act = e.target.closest('[data-act]');
+  const box = card.querySelector('.turn-sources');
+  const toggle = card.querySelector('[data-act="sources"]');
+  const reveal = open => {
+    if (!box) return;
+    box.hidden = !open;
+    if (toggle) toggle.textContent = toggle.textContent.replace(/^(Show|Hide)/, open ? 'Hide' : 'Show');
+  };
+  if (cite) {
+    reveal(true);
+    card.querySelectorAll('.brain-source').forEach(x => x.classList.toggle('on', x.dataset.n === cite.dataset.n));
+    const hit = card.querySelector(`.brain-source[data-n="${cite.dataset.n}"]`);
+    if (hit) hit.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } else if (act && act.dataset.act === 'sources') {
+    reveal(box.hidden);
+  } else if (act && act.dataset.act === 'copy') {
+    try { await navigator.clipboard.writeText(card.dataset.answer); toast('Copied'); } catch { toast('Could not copy'); }
+  }
 });

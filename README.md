@@ -154,8 +154,13 @@ fact that points at the passage it came from. Without it, you still get the pass
 - **It answers only from your material.** The model is told to say so when the passages do not
   contain the answer, but a small model can still misread, so check the page it cites.
 - **Sensitive files are left out**, the same as everywhere else in the app.
-- **Matching is by words, not meaning.** "TCP handshake" finds the slide that says those words;
-  a question phrased with none of the slide's words will miss it.
+- **It looks for the idea, not only your words.** With the model available it first asks for
+  other words a slide might use ("DFA" also finds "deterministic finite automaton"), and it
+  prefers a page that explains over one that is a table or loose diagram labels.
+- **Diagrams trip it up.** A slide that is only labels on a picture gives the model words in no
+  order, and it can pair them wrongly.
+- **A page opened from an answer goes back to the answer**, and the conversation stays until you
+  clear it or close the app.
 
 The passages of each document are cached under Application Support and reread only when the
 file changes.

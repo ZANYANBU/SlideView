@@ -203,15 +203,29 @@
       </button>
       <div class="graph-title">Ask your material<span id="brainSub" class="graph-sub"></span></div>
     </div>
-    <div class="brain-body">
-      <form id="brainForm" class="brain-form">
-        <input id="brainInput" class="brain-input" type="text" placeholder="Ask a question" autocomplete="off" spellcheck="false" maxlength="600">
-        <button class="btn primary" type="submit">Ask</button>
-      </form>
-      <div id="brainNote" class="brain-note" hidden></div>
-      <div id="brainBusy" class="brain-busy" hidden><div class="spinner"></div><span id="brainBusyText"></span></div>
-      <div id="brainAnswer" class="brain-answer" hidden></div>
-      <div id="brainSources" class="brain-sources"></div>
+    <div id="brainScroll" class="brain-scroll">
+      <div class="brain-col">
+        <div id="brainEmpty" class="brain-empty">
+          <div class="brain-mark">
+            <svg viewBox="0 0 24 24" width="26" height="26"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M4 5.5h16v10h-8.5L7 19.5v-4H4z"/></svg>
+          </div>
+          <h2>Ask your material</h2>
+          <p id="brainEmptySub">Answers come from your own decks and notes, with the page each one is drawn from.</p>
+          <div id="brainChips" class="brain-chips"></div>
+        </div>
+        <div id="brainThread" class="brain-thread"></div>
+      </div>
+    </div>
+    <div class="brain-dock">
+      <div class="brain-col">
+        <form id="brainForm" class="brain-form">
+          <input id="brainInput" class="brain-input" type="text" placeholder="Ask about your material" autocomplete="off" spellcheck="false" maxlength="600">
+          <button id="brainSend" class="brain-send" type="submit" title="Ask (Return)">
+            <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 12.5v-9M4 7l4-4 4 4"/></svg>
+          </button>
+        </form>
+        <div class="brain-foot"><span id="brainModel"></span><button id="brainClear" class="brain-link" type="button" hidden>Clear</button></div>
+      </div>
     </div>
   </div>
 

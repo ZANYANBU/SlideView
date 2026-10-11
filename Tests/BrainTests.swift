@@ -93,6 +93,63 @@ final class BrainTests: XCTestCase {
         XCTAssertEqual(BrainPrompt.tidy("I could not find that in your material. [1]", notes: 5), BrainPrompt.notFound)
     }
 
+    func testADeckIsFoundByItsName() {
+        let passages = [Passage(doc: "a", page: 1, text: "Lift and drag on a wing."),
+                        Passage(doc: "b", page: 1, text: "Sorting and searching.")]
+        let index = PassageIndex(passages, titles: ["a": "Flight Controls.pdf", "b": "Algorithms.pdf"])
+        XCTAssertEqual(index.search("flight controls").first?.passage.doc, "a")
+        XCTAssertTrue(PassageIndex(passages).search("flight controls").isEmpty)
+    }
+
+    func testSuggestionsAreTheBiggestDecksWithTidyNames() {
+        let passages = [Passage(doc: "a", page: 1, text: "x"), Passage(doc: "b", page: 1, text: "x"),
+                        Passage(doc: "b", page: 2, text: "x"), Passage(doc: "c", page: 1, text: "x")]
+        let names = ["a": "Unit_1 Automata.pdf", "b": "4_Flight Controls.pptx", "c": "Notes.md"]
+        XCTAssertEqual(Brain.suggest(passages, names, count: 2), ["4 Flight Controls", "Unit 1 Automata"])
+    }
+
+    func testProseScoresSentencesAboveTablesAndLabels() {
+        let explain = BrainText.prose("A DFA has exactly one transition for each symbol. An NFA may have several, or none at all.")
+        let table = BrainText.prose("state 0 1 p {q,s} {q} q {r} {q,r} r {s} {p} *s {p} E C H F G H")
+        let labels = BrainText.prose("AXES OF AN AEROPLANE Lateral axis y Pitch Roll Yaw x Longitudinal axis z Vertical axis")
+        XCTAssertGreaterThan(explain, 0.75)
+        XCTAssertLessThan(table, 0.3)
+        XCTAssertGreaterThan(explain, labels + 0.2, "labels off a diagram have no sentences")
+        XCTAssertEqual(BrainText.prose("too short"), 0.3)
+    }
+
+    func testThePageThatExplainsBeatsThePageThatTabulates() {
+        let index = PassageIndex([
+            Passage(doc: "t", page: 1, text: "NFA DFA NFA to DFA state 0 1 p {q,s} {q} q {r} {q,r} r {s} {p} DFA NFA"),
+            Passage(doc: "e", page: 1, text: "A DFA has exactly one transition for each symbol. An NFA may have several, or none at all."),
+        ])
+        XCTAssertEqual(index.search("difference between DFA and NFA").first?.passage.doc, "e")
+    }
+
+    func testRelatedWordsFindAPageTheQuestionsWordsMiss() {
+        let index = PassageIndex([
+            Passage(doc: "a", page: 1, text: "A deterministic finite automaton reads one symbol at a time and never has a choice of move."),
+            Passage(doc: "b", page: 1, text: "The rudder controls yaw about the vertical axis of the aircraft in flight."),
+        ])
+        XCTAssertTrue(index.search("what is a DFA").isEmpty, "the slide never says DFA")
+        XCTAssertEqual(index.search("what is a DFA", related: ["deterministic finite automaton"]).first?.passage.doc, "a")
+    }
+
+    func testTheQuestionsOwnWordsOutweighRelatedOnes() {
+        let index = PassageIndex([
+            Passage(doc: "own", page: 1, text: "The handshake opens every connection before any data is sent between hosts."),
+            Passage(doc: "rel", page: 1, text: "A greeting is polite before any conversation is started between people."),
+        ])
+        XCTAssertEqual(index.search("handshake", related: ["greeting"]).first?.passage.doc, "own")
+    }
+
+    func testTermsCleansTheModelsList() {
+        XCTAssertEqual(BrainPrompt.terms("deterministic finite automaton, NFA; state machine\n- transition function."),
+                       ["deterministic finite automaton", "NFA", "state machine", "transition function"])
+        XCTAssertEqual(BrainPrompt.terms("a, , ok").count, 1, "one-letter and empty items are dropped")
+        XCTAssertEqual(BrainPrompt.terms((1...20).map { "term\($0)" }.joined(separator: ",")).count, 8)
+    }
+
     func testModelStateAlwaysExplainsItself() {
         let state = OnDeviceModel.state
         XCTAssertEqual(state.ready, state.reason.isEmpty, "a reason is given exactly when the model is not ready")
