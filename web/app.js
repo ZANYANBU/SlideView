@@ -1869,7 +1869,8 @@ gcv.addEventListener('mousemove', e => {
     tip.hidden = false;
     tip.innerHTML = `<b>${esc(n.name)}</b><div class="meta">${esc(n.subject)} · ${n.ext.toUpperCase()}`
       + `${n.pages ? ' · ' + n.pages + ' pages' : ''}${n.notes ? ' · ✎ ' + n.notes : ''}</div>`
-      + (n.terms?.length ? `<div class="terms">${n.terms.map(esc).join(' · ')}</div>` : '');
+      + (n.terms?.length ? `<div class="terms">${n.terms.map(esc).join(' · ')}</div>` : '')
+      + '<div class="meta">Click to open · Shift-click to ask about it</div>';
     const r = gcv.getBoundingClientRect();
     tip.style.left = Math.min(e.clientX - r.left + 16, r.width - 262) + 'px';
     tip.style.top = Math.min(e.clientY - r.top + 16, r.height - 96) + 'px';
@@ -1888,7 +1889,10 @@ addEventListener('mouseup', () => {
 gcv.addEventListener('click', e => {
   if (G.moved) return;
   const n = nodeAt(toGraph(e));
-  if (n) openDoc(n.id);
+  if (!n) return;
+  // Shift-click hands the deck to the assistant instead of opening it.
+  if (e.shiftKey) { openAsk(); newChat(); ask(`Make a study guide for ${n.name.replace(/\.[a-z0-9]+$/i, '')}`); return; }
+  openDoc(n.id);
 });
 gcv.addEventListener('dblclick', e => { e.preventDefault(); fit(60); });
 
@@ -1947,41 +1951,113 @@ COMMANDS.map = () => openMap();
 COMMANDS.fitMap = () => fit(40);
 
 /* ════════════════════════════  ask  ════════════════════════════ */
-/* A question goes to /api/brain/ask, which ranks every page of the library
-   against it and, where this Mac has Apple's on-device model, writes an answer
-   from the best ones. The passages always come back, so each claim can be
-   checked against the slide it came from. The thread lives only in memory. */
-const ASK = { busy: false, poll: null, turns: 0, model: false, from: false };
+/* The assistant. A question goes to /api/brain/ask, which finds the best pages
+   by keyword and by meaning and, where this Mac has Apple's on-device model,
+   writes an answer from them. Chats and remembered notes are kept on disk by
+   the app and listed in the side column. Every claim links to its page. */
+const ASK = { busy: false, poll: null, model: false, from: false, chat: null, stageTimer: null };
+const askGet = async url => (await fetch(url)).json();
 
 function openAsk() {
   showScreen('brain');
   $('#brainInput').focus();
   askStatus();
+  loadChats();
+  loadNotes();
+  loadEngine();
 }
 
 async function askStatus() {
   clearTimeout(ASK.poll);
   if ($('#brain').hidden) return;
   let s;
-  try { s = await (await fetch('/api/brain')).json(); } catch { return; }
+  try { s = await askGet('/api/brain'); } catch { return; }
   if (!s.ready) {
     $('#brainSub').textContent = s.total ? `Reading ${s.progress} of ${s.total} documents` : 'Reading your material';
     ASK.poll = setTimeout(askStatus, 700);
     return;
   }
   ASK.model = s.model;
-  $('#brainSub').textContent = `${s.documents} documents · ${s.passages} passages`;
+  const meaning = s.meaning >= s.passages ? '' : ` · learning meanings ${Math.round(100 * s.meaning / Math.max(1, s.passages))}%`;
+  $('#brainSub').textContent = `${s.documents} documents · ${s.passages} passages${meaning}`;
+  if (meaning && !ASK.busy) ASK.poll = setTimeout(askStatus, 3000);
   $('#brainModel').textContent = s.model
-    ? 'Answers are written on this Mac by Apple Intelligence. Check the page each one cites.'
+    ? `Written on this Mac by ${s.engine || 'the model'}. Nothing leaves it. Check the page each answer cites.`
     : `Showing matching passages only. ${s.modelNote}`;
   if (!$('#brainChips').children.length) {
-    $('#brainChips').innerHTML = (s.suggestions || []).map(n =>
-      `<button class="brain-chip" type="button" data-q="${esc('What are the key points of ' + n + '?')}">${esc(n)}</button>`).join('');
+    const chips = (s.subjects || []).filter(x => x && x.length < 24 && !x.includes('/')).slice(0, 3)
+      .map(x => [`${x} study guide`, `Make a study guide for ${x}`]);
+    (s.suggestions || []).slice(0, 2).forEach(n => chips.push([n, `What are the key points of ${n}?`]));
+    $('#brainChips').innerHTML = chips.map(([label, q]) =>
+      `<button class="brain-chip" type="button" data-q="${esc(q)}">${esc(label)}</button>`).join('');
   }
 }
 
-/* The model writes plain text with the odd list. Turn that into paragraphs and
-   lists, make **bold** bold, and make each [n] a chip that points at its source. */
+/* ── side column ── */
+async function loadEngine(result) {
+  let r = result;
+  if (!r) { try { r = await askGet('/api/brain/engine'); } catch { return; } }
+  $('#brainEngine').innerHTML = r.options.map(o =>
+    `<option value="${esc(o.id)}"${o.id === r.choice ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  $('#brainEngine').title = r.ollama ? 'Which model writes the answers' : 'Start Ollama to see its models here';
+}
+
+async function loadChats() {
+  let r;
+  try { r = await askGet('/api/brain/chats'); } catch { return; }
+  $('#brainChats').innerHTML = r.chats.length ? r.chats.map(c => `
+    <div class="brain-item${c.id === ASK.chat ? ' on' : ''}" data-id="${esc(c.id)}" title="${esc(c.title)}">
+      <span class="label">${esc(c.title)}</span><button class="x" type="button" title="Delete this chat">×</button>
+    </div>`).join('') : '<div class="none">Your chats are kept here.</div>';
+}
+
+async function loadNotes(result) {
+  let r = result;
+  if (!r) { try { r = await askGet('/api/brain/notes'); } catch { return; } }
+  $('#brainNotes').innerHTML = r.notes.length ? r.notes.map(n => `
+    <div class="brain-item note" data-id="${esc(n.id)}">
+      <span class="label">${esc(n.text)}</span><button class="x" type="button" title="Forget this">×</button>
+    </div>`).join('') : '<div class="none">Say "remember that…" and it is kept here.</div>';
+}
+
+async function saveNote(text) {
+  try {
+    const r = await (await fetch('/api/brain/notes', { method: 'POST', body: JSON.stringify({ text }) })).json();
+    if (r.notes) { loadNotes(r); toast('Remembered'); }
+  } catch { toast('Could not save that'); }
+}
+
+function newChat() {
+  if (ASK.busy) return;
+  ASK.chat = null;
+  $('#brainThread').innerHTML = '';
+  $('#brainEmpty').hidden = false;
+  $$('#brainChats .brain-item').forEach(x => x.classList.remove('on'));
+  $('#brainInput').focus();
+}
+
+async function openChat(id) {
+  if (ASK.busy) return;
+  let chat;
+  try { chat = await askGet('/api/brain/chats?id=' + encodeURIComponent(id)); } catch { return; }
+  if (!chat.turns) return;
+  ASK.chat = chat.id;
+  const thread = $('#brainThread');
+  thread.innerHTML = '';
+  $('#brainEmpty').hidden = true;
+  for (const t of chat.turns) {
+    const { card } = addTurn(t.question);
+    renderTurn(card, { answer: t.answer || null, sources: t.sources, grounded: t.grounded, kind: t.kind, seconds: t.seconds, linked: t.linked, modelNote: '' });
+  }
+  $$('#brainChats .brain-item').forEach(x => x.classList.toggle('on', x.dataset.id === id));
+  $('#brainScroll').scrollTop = $('#brainScroll').scrollHeight;
+  $('#brainInput').focus();
+}
+
+/* ── rendering ── */
+/* The model writes plain text with the odd list or heading. Turn that into
+   paragraphs, lists and headings, make **bold** bold, and make each [n] a chip
+   that points at its source. */
 function formatAnswer(text, sources) {
   const inline = t => esc(t)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -1995,8 +2071,10 @@ function formatAnswer(text, sources) {
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line) { close(); continue; }
+    const head = line.match(/^#{1,4}\s+(.*)$/);
     const num = line.match(/^\d+[.)]\s+(.*)$/), dash = line.match(/^[-*•]\s+(.*)$/);
-    if (num || dash) {
+    if (head) { close(); out.push(`<h3>${inline(head[1])}</h3>`); }
+    else if (num || dash) {
       const tag = num ? 'ol' : 'ul';
       if (!list || list.tag !== tag) { close(); list = { tag, items: [] }; }
       list.items.push(`<li>${inline((num || dash)[1])}</li>`);
@@ -2014,25 +2092,45 @@ function sourceCards(sources) {
     </button>`).join('');
 }
 
-function renderTurn(card, r, seconds) {
+function addTurn(question) {
+  const q = document.createElement('div');
+  q.className = 'turn-q';
+  q.textContent = question;
+  const card = document.createElement('div');
+  card.className = 'turn-a';
+  card.dataset.question = question;
+  $('#brainThread').append(q, card);
+  return { q, card };
+}
+
+function renderTurn(card, r) {
   const sources = r.sources || [];
-  let body;
+  const tags = { guide: ['guide', 'Study guide'], note: ['saved', 'Remembered'] };
+  let body = '';
+  if (tags[r.kind]) body += `<div class="tag ${tags[r.kind][0]}">${tags[r.kind][1]}</div>`;
+  else if (r.answer && r.grounded === false) body += '<div class="tag">Not from your material</div>';
   if (r.answer) {
-    body = (r.grounded === false ? '<div class="tag">Not from your material</div>' : '') +
-      `<div class="turn-text">${formatAnswer(r.answer, sources)}</div>`;
+    body += `<div class="turn-text">${formatAnswer(r.answer, sources)}</div>`;
   } else if (sources.length) {
-    body = `<div class="turn-text muted">These pages match best. ${esc(r.modelNote || '')}</div>`;
+    body += `<div class="turn-text muted">These pages match best. ${esc(r.modelNote || '')}</div>`;
   } else {
-    body = '<div class="turn-text muted">Nothing in your material matches that. Try the words a slide would use.</div>';
+    body += '<div class="turn-text muted">Nothing in your material matches that. Try the words a slide would use, or name the subject.</div>';
   }
   const open = !r.answer && sources.length > 0;
   const meta = [];
   if (sources.length) meta.push(`<button class="brain-link" type="button" data-act="sources">${open ? 'Hide' : 'Show'} ${sources.length} passage${sources.length > 1 ? 's' : ''}</button>`);
   meta.push('<span class="grow"></span>');
-  if (r.answer) meta.push(`<span>${seconds} s on this Mac</span>`, '<button class="brain-link" type="button" data-act="copy">Copy</button>');
-  card.innerHTML = body +
+  if (r.answer && r.kind !== 'note') {
+    if (r.seconds) meta.push(`<span>${r.seconds} s on this Mac</span>`);
+    meta.push('<button class="brain-link" type="button" data-act="remember">Remember</button>',
+              '<button class="brain-link" type="button" data-act="copy">Copy</button>');
+  }
+  const linked = (r.linked || []).length
+    ? `<div class="turn-linked"><span>Linked in your map</span>${r.linked.map(x =>
+        `<button class="brain-chip small" type="button" data-linked="${esc(x.name.replace(/\.[a-z0-9]+$/i, ''))}">${esc(x.name.replace(/\.[a-z0-9]+$/i, ''))}</button>`).join('')}</div>` : '';
+  card.innerHTML = body + linked +
     (sources.length ? `<div class="turn-sources"${open ? '' : ' hidden'}>${sourceCards(sources)}</div>` : '') +
-    (sources.length || r.answer ? `<div class="turn-meta">${meta.join('')}</div>` : '');
+    (meta.length > 1 ? `<div class="turn-meta">${meta.join('')}</div>` : '');
   card.dataset.answer = r.answer || '';
 }
 
@@ -2044,31 +2142,31 @@ function scrollAsk() {
 async function ask(question) {
   if (ASK.busy || !question) return;
   ASK.busy = true;
-  ASK.turns++;
   $('#brainSend').disabled = true;
   $('#brainEmpty').hidden = true;
-  $('#brainClear').hidden = false;
   $('#brainInput').value = '';
-
-  const thread = $('#brainThread');
-  const q = document.createElement('div');
-  q.className = 'turn-q';
-  q.textContent = question;
-  const card = document.createElement('div');
-  card.className = 'turn-a';
+  const { card } = addTurn(question);
   card.innerHTML = '<div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="why">Looking through your material</span></div>';
-  thread.append(q, card);
   scrollAsk();
 
-  const started = performance.now();
-  const hint = setTimeout(() => {
-    const why = card.querySelector('.why');
-    if (why && ASK.model) why.textContent = 'Writing an answer on this Mac';
-  }, 1200);
+  // The server says what it is doing; show that while the answer is on its way.
+  ASK.stageTimer = setInterval(async () => {
+    try {
+      const s = await askGet('/api/brain');
+      const why = card.querySelector('.why');
+      if (why && s.stage) why.textContent = s.stage;
+    } catch { /* keep the last line */ }
+  }, 900);
   try {
     for (;;) {
-      const r = await (await fetch('/api/brain/ask', { method: 'POST', body: JSON.stringify({ q: question }) })).json();
-      if (r.ready) { renderTurn(card, r, Math.max(1, Math.round((performance.now() - started) / 1000))); break; }
+      const r = await (await fetch('/api/brain/ask', {
+        method: 'POST', body: JSON.stringify({ q: question, conversation: ASK.chat }) })).json();
+      if (r.ready) {
+        ASK.chat = r.conversation || ASK.chat;
+        renderTurn(card, r);
+        if (r.kind === 'note') loadNotes();
+        break;
+      }
       const why = card.querySelector('.why');
       if (why) why.textContent = r.total ? `Reading ${r.progress} of ${r.total} documents` : 'Reading your material';
       await new Promise(done => setTimeout(done, 700));
@@ -2077,29 +2175,51 @@ async function ask(question) {
   } catch {
     card.innerHTML = '<div class="turn-text muted">Something went wrong asking that. Try again.</div>';
   } finally {
-    clearTimeout(hint);
+    clearInterval(ASK.stageTimer);
     ASK.busy = false;
     $('#brainSend').disabled = false;
     scrollAsk();
     if (!$('#brain').hidden) $('#brainInput').focus();
+    loadChats();
     askStatus();
   }
 }
 
 $('#askBtn').onclick = () => openAsk();
 $('#brainBack').onclick = () => toLibrary();
+$('#brainNew').onclick = () => newChat();
+$('#brainEngine').addEventListener('change', async e => {
+  try { loadEngine(await (await fetch('/api/brain/engine?set=' + encodeURIComponent(e.target.value), { method: 'POST' })).json()); } catch { /* keep the old choice */ }
+  askStatus();
+});
 $('#brainForm').addEventListener('submit', e => { e.preventDefault(); ask($('#brainInput').value.trim()); });
 $('#brainChips').addEventListener('click', e => {
   const chip = e.target.closest('.brain-chip');
   if (chip) ask(chip.dataset.q);
 });
-$('#brainClear').onclick = () => {
-  if (ASK.busy) return;
-  $('#brainThread').innerHTML = '';
-  $('#brainEmpty').hidden = false;
-  $('#brainClear').hidden = true;
-  $('#brainInput').focus();
-};
+$('#brainChats').addEventListener('click', async e => {
+  const item = e.target.closest('.brain-item');
+  if (!item) return;
+  if (e.target.closest('.x')) {
+    await fetch('/api/brain/chats?delete=' + encodeURIComponent(item.dataset.id), { method: 'POST' });
+    if (ASK.chat === item.dataset.id) newChat();
+    loadChats();
+  } else {
+    openChat(item.dataset.id);
+  }
+});
+$('#brainNotes').addEventListener('click', async e => {
+  const item = e.target.closest('.brain-item');
+  if (!item || !e.target.closest('.x')) return;
+  try { loadNotes(await (await fetch('/api/brain/notes?delete=' + encodeURIComponent(item.dataset.id), { method: 'POST' })).json()); } catch { /* list stays */ }
+});
+$('#brainNoteForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const text = $('#brainNoteInput').value.trim();
+  if (text.length < 2) return;
+  $('#brainNoteInput').value = '';
+  saveNote(text);
+});
 $('#brainThread').addEventListener('click', async e => {
   const card = e.target.closest('.turn-a');
   if (!card) return;
@@ -2109,6 +2229,8 @@ $('#brainThread').addEventListener('click', async e => {
     if (cur && cur.docId === source.dataset.id) { show(+source.dataset.page); ASK.from = true; }
     return;
   }
+  const more = e.target.closest('[data-linked]');
+  if (more) return void ask(`What are the key points of ${more.dataset.linked}?`);
   const cite = e.target.closest('.cite');
   const act = e.target.closest('[data-act]');
   const box = card.querySelector('.turn-sources');
@@ -2127,5 +2249,8 @@ $('#brainThread').addEventListener('click', async e => {
     reveal(box.hidden);
   } else if (act && act.dataset.act === 'copy') {
     try { await navigator.clipboard.writeText(card.dataset.answer); toast('Copied'); } catch { toast('Could not copy'); }
+  } else if (act && act.dataset.act === 'remember') {
+    const first = card.dataset.answer.replace(/\[\d+(?:\s*,\s*\d+)*\]/g, '').replace(/^#+\s*/gm, '').split('\n').find(x => x.trim().length > 12) || card.dataset.answer;
+    saveNote(`${card.dataset.question}: ${first.trim()}`.slice(0, 380));
   }
 });

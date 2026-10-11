@@ -203,28 +203,51 @@
       </button>
       <div class="graph-title">Ask your material<span id="brainSub" class="graph-sub"></span></div>
     </div>
-    <div id="brainScroll" class="brain-scroll">
-      <div class="brain-col">
-        <div id="brainEmpty" class="brain-empty">
-          <div class="brain-mark">
-            <svg viewBox="0 0 24 24" width="26" height="26"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M4 5.5h16v10h-8.5L7 19.5v-4H4z"/></svg>
-          </div>
-          <h2>Ask your material</h2>
-          <p id="brainEmptySub">Answers come from your own decks and notes, with the page each one is drawn from.</p>
-          <div id="brainChips" class="brain-chips"></div>
+    <div class="brain-main">
+      <aside id="brainSide" class="brain-side">
+        <button id="brainNew" class="brain-new" type="button">
+          <svg viewBox="0 0 16 16" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" d="M8 3.6v8.8M3.6 8h8.8"/></svg>
+          New chat
+        </button>
+        <div class="brain-side-scroll">
+          <div class="brain-side-head">Chats</div>
+          <div id="brainChats" class="brain-list"></div>
+          <div class="brain-side-head">Remembered</div>
+          <div id="brainNotes" class="brain-list"></div>
+          <form id="brainNoteForm" class="brain-note-form">
+            <input id="brainNoteInput" type="text" placeholder="Add something to remember" maxlength="400" autocomplete="off" spellcheck="false">
+          </form>
         </div>
-        <div id="brainThread" class="brain-thread"></div>
-      </div>
-    </div>
-    <div class="brain-dock">
-      <div class="brain-col">
-        <form id="brainForm" class="brain-form">
-          <input id="brainInput" class="brain-input" type="text" placeholder="Ask about your material" autocomplete="off" spellcheck="false" maxlength="600">
-          <button id="brainSend" class="brain-send" type="submit" title="Ask (Return)">
-            <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 12.5v-9M4 7l4-4 4 4"/></svg>
-          </button>
-        </form>
-        <div class="brain-foot"><span id="brainModel"></span><button id="brainClear" class="brain-link" type="button" hidden>Clear</button></div>
+        <label class="brain-engine">
+          <span>Model</span>
+          <select id="brainEngine"></select>
+        </label>
+      </aside>
+      <div class="brain-pane">
+        <div id="brainScroll" class="brain-scroll">
+          <div class="brain-col">
+            <div id="brainEmpty" class="brain-empty">
+              <div class="brain-mark">
+                <svg viewBox="0 0 24 24" width="26" height="26"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M4 5.5h16v10h-8.5L7 19.5v-4H4z"/></svg>
+              </div>
+              <h2>Ask your material</h2>
+              <p>Ask a question, ask for a study guide of a subject, or tell me something to remember. Every answer shows the page it came from.</p>
+              <div id="brainChips" class="brain-chips"></div>
+            </div>
+            <div id="brainThread" class="brain-thread"></div>
+          </div>
+        </div>
+        <div class="brain-dock">
+          <div class="brain-col">
+            <form id="brainForm" class="brain-form">
+              <input id="brainInput" class="brain-input" type="text" placeholder="Ask about your material" autocomplete="off" spellcheck="false" maxlength="600">
+              <button id="brainSend" class="brain-send" type="submit" title="Ask (Return)">
+                <svg viewBox="0 0 16 16" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 12.5v-9M4 7l4-4 4 4"/></svg>
+              </button>
+            </form>
+            <div class="brain-foot"><span id="brainModel"></span></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

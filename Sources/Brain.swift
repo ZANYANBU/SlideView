@@ -153,11 +153,11 @@ struct PassageIndex {
         averageLength = passages.isEmpty ? 1 : max(1, total / Double(passages.count))
     }
 
-    /// The passages that best match `query`, best first, at most one per page so
-    /// a single wordy page cannot fill the whole answer. `related` are other words
-    /// for the same idea; they count for half. Pages that read as prose are
-    /// preferred over tables and loose labels.
-    func search(_ query: String, related: [String] = [], limit: Int = 5) -> [(passage: Passage, score: Double)] {
+    /// Every passage that shares a word with `query`, best first. `related` are
+    /// other words for the same idea and count for half. Pages that read as prose
+    /// are preferred over tables and loose labels. `allowed` limits the search to
+    /// some documents.
+    func rank(_ query: String, related: [String] = [], allowed: Set<String>? = nil) -> [(index: Int, score: Double)] {
         let k1 = 1.5, b = 0.75
         let n = Double(passages.count)
         var weights: [String: Double] = [:]
@@ -168,16 +168,25 @@ struct PassageIndex {
             guard let hits = postings[term] else { continue }
             let idf = log(1 + (n - Double(hits.count) + 0.5) / (Double(hits.count) + 0.5))
             for h in hits {
+                if let allowed, !allowed.contains(passages[h.index].doc) { continue }
                 let norm = h.count + k1 * (1 - b + b * lengths[h.index] / averageLength)
                 scores[h.index, default: 0] += weight * idf * h.count * (k1 + 1) / norm
             }
         }
-        for i in scores.keys { scores[i]! *= 0.2 + 0.8 * prose[i] }
+        return scores.map { (index: $0.key, score: $0.value * (0.2 + 0.8 * prose[$0.key])) }
+            .sorted { $0.score != $1.score ? $0.score > $1.score : $0.index < $1.index }
+    }
+
+    func proseScore(_ index: Int) -> Double { prose[index] }
+
+    /// The best `limit` passages for `query`, at most one per page so a single
+    /// wordy page cannot fill the whole answer.
+    func search(_ query: String, related: [String] = [], allowed: Set<String>? = nil, limit: Int = 5) -> [(passage: Passage, score: Double)] {
         var seen = Set<String>()
         var out: [(Passage, Double)] = []
-        for (i, s) in scores.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) {
-            let p = passages[i]
-            if seen.insert("\(p.doc)#\(p.page)").inserted { out.append((p, s)) }
+        for hit in rank(query, related: related, allowed: allowed) {
+            let p = passages[hit.index]
+            if seen.insert("\(p.doc)#\(p.page)").inserted { out.append((p, hit.score)) }
             if out.count == limit { break }
         }
         return out
@@ -323,17 +332,24 @@ enum OnDeviceModel {
 
 /// Reads every ready document page by page and keeps the passages, so a question
 /// can be answered without opening a single file. Each document's passages are
-/// cached on disk against its size and date and reread only when it changes.
+/// cached on disk against its size and date and reread only when it changes. Once
+/// the passages are in, their vectors are worked out in the background.
 final class Brain {
     static let shared = Brain()
 
     private let lock = NSLock()
     private var index: PassageIndex?
+    private var vectors: VectorIndex?
     private var names: [String: String] = [:]
+    private var subjects: [String: Set<String>] = [:]
     private var suggestions: [String] = []
     private var building = false
     private var done = 0, total = 0
+    private var embedded = 0
+    private var stage = ""
+    private var generation = 0
     private let queue = DispatchQueue(label: "slideview.brain")
+    private let vectorQueue = DispatchQueue(label: "slideview.brain.vectors", qos: .utility)
     private let cacheDir: URL
 
     private init() {
@@ -343,46 +359,63 @@ final class Brain {
 
     /// Forget the index: the set of documents just changed underneath it.
     func invalidate() {
-        lock.lock(); index = nil; lock.unlock()
+        lock.lock(); index = nil; vectors = nil; generation += 1; lock.unlock()
     }
 
     func status() -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
-        let model = OnDeviceModel.state
+        let model = Engine.state
         var out: [String: Any] = ["ready": index != nil, "progress": done, "total": total,
-                                  "model": model.ready, "modelNote": model.reason]
+                                  "model": model.ready, "modelNote": model.reason, "engine": model.label, "stage": stage]
         if let index {
             out["passages"] = index.passages.count
             out["documents"] = names.count
             out["suggestions"] = suggestions
+            out["subjects"] = subjects.keys.sorted()
+            out["meaning"] = vectors != nil ? index.passages.count : embedded
         }
         return out
     }
+
+    private func set(stage text: String) { lock.lock(); stage = text; lock.unlock() }
 
     func build() {
         lock.lock()
         if building || index != nil { lock.unlock(); return }
         building = true; done = 0
+        let mine = generation
         lock.unlock()
         queue.async { [weak self] in
             guard let self else { return }
-            let (built, names) = self.read()
+            let read = self.read()
             self.lock.lock()
-            self.index = built; self.names = names; self.building = false
-            self.suggestions = Brain.suggest(built.passages, names)
+            self.index = read.index; self.names = read.names; self.subjects = read.subjects
+            self.suggestions = Brain.suggest(read.index.passages, read.names)
+            self.building = false; self.embedded = 0
             self.lock.unlock()
+            self.vectorQueue.async { self.embed(read.index.passages, files: read.files, generation: mine) }
         }
     }
 
-    private func read() -> (PassageIndex, [String: String]) {
+    private struct Read {
+        var index: PassageIndex
+        var names: [String: String]
+        var subjects: [String: Set<String>]
+        var files: [(doc: String, count: Int, url: URL)]
+    }
+
+    private func read() -> Read {
         let lib = Library.shared
         let docs = lib.scan().filter { !Library.isSensitive($0.url) && lib.state($0) == .ready }
         lock.lock(); total = docs.count; done = 0; lock.unlock()
 
         var all: [Passage] = []
         var names: [String: String] = [:]
+        var subjects: [String: Set<String>] = [:]
+        var files: [(String, Int, URL)] = []
         for d in docs {
-            let file = cacheDir.appendingPathComponent("\(d.id)-\(Int(d.modified))-\(d.size).json")
+            let stem = "\(d.id)-\(Int(d.modified))-\(d.size)"
+            let file = cacheDir.appendingPathComponent("\(stem).json")
             var passages: [Passage] = []
             if let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode([Passage].self, from: data) {
                 passages = cached
@@ -398,11 +431,43 @@ final class Brain {
                 dropStale(d.id)
                 if let data = try? JSONEncoder().encode(passages) { try? data.write(to: file, options: .atomic) }
             }
-            if !passages.isEmpty { names[d.id] = d.name }
+            if !passages.isEmpty {
+                names[d.id] = d.name
+                subjects[d.subject, default: []].insert(d.id)
+                files.append((d.id, passages.count, cacheDir.appendingPathComponent("\(stem).f32")))
+            }
             all.append(contentsOf: passages)
             lock.lock(); done += 1; lock.unlock()
         }
-        return (PassageIndex(all, titles: names), names)
+        return Read(index: PassageIndex(all, titles: names), names: names, subjects: subjects, files: files)
+    }
+
+    /// Works out a vector for every passage, a document at a time, reusing the
+    /// ones already on disk. Stops quietly if the library changes meanwhile.
+    private func embed(_ passages: [Passage], files: [(doc: String, count: Int, url: URL)], generation mine: Int) {
+        let size = Embedder.dimension
+        guard size > 0 else { return }
+        var raw: [[Float]] = []
+        raw.reserveCapacity(passages.count)
+        var offset = 0
+        for file in files {
+            lock.lock(); let current = generation; lock.unlock()
+            if current != mine { return }
+            let slice = passages[offset..<(offset + file.count)]
+            if let cached = VectorIndex.read(file.url, count: file.count, dimension: size) {
+                raw.append(contentsOf: cached)
+            } else {
+                let made = slice.map { Embedder.vector($0.text) }
+                VectorIndex.write(made, to: file.url, dimension: size)
+                raw.append(contentsOf: made)
+            }
+            offset += file.count
+            lock.lock(); embedded = offset; lock.unlock()
+        }
+        let built = VectorIndex(raw: raw)
+        lock.lock()
+        if generation == mine { vectors = built }
+        lock.unlock()
     }
 
     /// A few decks to offer as starting questions: the ones with the most to say.
@@ -420,50 +485,220 @@ final class Brain {
         for f in old where f.hasPrefix("\(id)-") { try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(f)) }
     }
 
-    /// The answer to `question` with the passages it was drawn from. While the
-    /// index is still being read this returns its progress instead.
-    func ask(_ question: String) -> [String: Any] {
+    // MARK: Retrieval
+
+    /// The best passages for a question: the keyword ranking and the meaning
+    /// ranking fused, one per page.
+    private func retrieve(_ question: String, related: [String], allowed: Set<String>?, cluster: Set<String>? = nil,
+                          index: PassageIndex, vectors: VectorIndex?, limit: Int) -> [Passage] {
+        let words = index.rank(question, related: related, allowed: allowed).prefix(40).map(\.index)
+        var lists = [Array(words)]
+        // Decks the map ties together get a second say, so the answer can draw on
+        // the neighbouring deck and not only the one with the most matching words.
+        if let cluster, !cluster.isEmpty {
+            lists.append(index.rank(question, related: related, allowed: cluster).prefix(20).map(\.index))
+        }
+        if let vectors, BrainText.tokens(question).count >= 2 {
+            let query = Embedder.vector(question)
+            let near = vectors.nearest(query, limit: 40, floor: 0.34) { i in
+                (allowed?.contains(index.passages[i].doc) ?? true) && index.proseScore(i) >= 0.25
+            }
+            lists.append(near.map(\.index))
+        }
+        var seen = Set<String>()
+        var out: [Passage] = []
+        for hit in VectorMath.fuse(lists) {
+            let p = index.passages[hit.index]
+            if seen.insert("\(p.doc)#\(p.page)").inserted { out.append(p) }
+            if out.count == limit { break }
+        }
+        return out
+    }
+
+    // MARK: Asking
+
+    /// Answers `question` inside the chat `conversation` (a new one when nil) and
+    /// saves the turn. While the index is still being read this returns its
+    /// progress instead.
+    func ask(_ question: String, conversation: String? = nil) -> [String: Any] {
         lock.lock()
-        let index = self.index, names = self.names
+        let index = self.index, vectors = self.vectors, names = self.names, subjects = self.subjects
         lock.unlock()
         guard let index else {
             build()
             var s = status(); s["answer"] = NSNull(); s["sources"] = [Any]()
             return s
         }
+        defer { set(stage: "") }
+        let started = Date()
+        let store = AssistantStore.shared
+        let model = Engine.state
+        let chat = conversation.flatMap { store.conversation($0) }
+        let earlier = (chat?.turns ?? []).filter { $0.kind != "note" }.map { (question: $0.question, answer: $0.answer) }
 
-        let model = OnDeviceModel.state
-        var related: [String] = []
-        if model.ready, BrainText.tokens(question).count >= 2,
-           let reply = try? OnDeviceModel.answer(instructions: BrainPrompt.related, prompt: question) {
-            related = BrainPrompt.terms(reply)
+        var kind = "answer", answer = "", grounded = true, note = model.reason
+        var sources: [SourceRef] = []
+        var linked: [Linked] = []
+
+        if let fact = Intent.remember(question) {
+            store.remember(fact)
+            kind = "note"; grounded = false
+            answer = "I'll remember that: \(fact)"
+        } else if Intent.isGuide(question) {
+            let scope = Scope.match(question, subjects: subjects, names: names)
+            let made = guide(question, scope: scope, index: index, vectors: vectors, names: names, model: model.ready)
+            kind = "guide"; answer = made.text; sources = made.sources
+            if answer.isEmpty { kind = "answer" }
         }
-        let hits = index.search(question, related: related, limit: 5)
-        let sources: [[String: Any]] = hits.enumerated().map { i, h in
-            ["n": i + 1, "id": h.passage.doc, "name": names[h.passage.doc] ?? "Document",
-             "page": h.passage.page, "text": h.passage.text]
-        }
-        var out: [String: Any] = ["ready": true, "sources": sources, "answer": NSNull(), "related": related]
-        out["model"] = model.ready
-        out["modelNote"] = model.reason
-        out["grounded"] = !hits.isEmpty
-        guard model.ready else { return out }
-        if hits.isEmpty {
-            // Nothing matched: let the model reply, clearly marked as not from the library.
-            if let reply = try? OnDeviceModel.answer(instructions: BrainPrompt.smallTalk, prompt: question) {
-                out["answer"] = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if answer.isEmpty {
+            let scope = Scope.match(question, subjects: subjects, names: names)
+            set(stage: "Looking through your material")
+            var related: [String] = []
+            if model.ready, BrainText.tokens(question).count >= 2,
+               let reply = try? Engine.answer(instructions: BrainPrompt.related, prompt: question) {
+                related = BrainPrompt.terms(reply)
             }
-            return out
+            // A short follow-up ("why?", "and the second one?") leans on the last question.
+            if BrainText.tokens(question).count <= 3, let last = earlier.last { related.append(last.question) }
+            var hits = retrieve(question, related: related, allowed: scope?.docs, index: index, vectors: vectors, limit: 5)
+            // Follow the map: the decks linked to the best matches join the search.
+            var top: [String] = []
+            for p in hits where !top.contains(p.doc) { top.append(p.doc) }
+            let near = top.prefix(2).flatMap { GraphBuilder.shared.neighbours(of: $0) }
+                .filter { names[$0.id] != nil && (scope?.docs.contains($0.id) ?? true) }
+            if !near.isEmpty {
+                let cluster = Set(top.prefix(2)).union(near.map(\.id))
+                hits = retrieve(question, related: related, allowed: scope?.docs, cluster: cluster, index: index, vectors: vectors, limit: 5)
+            }
+            let used = Set(hits.map(\.doc))
+            linked = top.first.map { GraphBuilder.shared.neighbours(of: $0, limit: 6) }?
+                .filter { !used.contains($0.id) }.compactMap { n in names[n.id].map { Linked(id: n.id, name: $0) } }
+                .prefix(3).map { $0 } ?? []
+            sources = hits.enumerated().map { i, p in
+                SourceRef(n: i + 1, id: p.doc, name: names[p.doc] ?? "Document", page: p.page, text: p.text)
+            }
+            grounded = !hits.isEmpty
+            if model.ready {
+                set(stage: "Writing an answer on this Mac")
+                if hits.isEmpty && !Intent.recalls(question) {
+                    kind = "chat"
+                    answer = ((try? Engine.answer(instructions: BrainPrompt.smallTalk, prompt: question)) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    let recalled = Intent.recalls(question) ? recall(question, store: store, except: chat?.id) : []
+                    let prompt = AssistantPrompt.build(
+                        question: question,
+                        notes: sources.map { (title: $0.name, page: $0.page, text: $0.text) },
+                        known: store.notes().map(\.text), earlier: earlier, recalled: recalled, budget: Engine.budget)
+                    do {
+                        let raw = try Engine.answer(instructions: store.instructions, prompt: prompt)
+                        answer = BrainPrompt.tidy(raw, notes: sources.count)
+                    } catch {
+                        note = "The model could not answer: \(error.localizedDescription)"
+                    }
+                }
+            }
         }
 
-        let notes = hits.map { (title: names[$0.passage.doc] ?? "Document", page: $0.passage.page, text: $0.passage.text) }
-        do {
-            let raw = try OnDeviceModel.answer(instructions: BrainPrompt.instructions,
-                                               prompt: BrainPrompt.build(question: question, notes: notes))
-            out["answer"] = BrainPrompt.tidy(raw, notes: notes.count)
-        } catch {
-            out["modelNote"] = "The model could not answer: \(error.localizedDescription)"
-        }
+        let seconds = max(1, Int(Date().timeIntervalSince(started).rounded()))
+        var out: [String: Any] = ["ready": true, "kind": kind, "grounded": grounded, "seconds": seconds,
+                                  "sources": sources.map(\.json), "model": model.ready, "modelNote": note,
+                                  "answer": answer.isEmpty ? NSNull() : answer as Any,
+                                  "linked": linked.map { ["id": $0.id, "name": $0.name] }]
+        let turn = Turn(question: question, answer: answer, kind: kind, grounded: grounded, seconds: seconds,
+                        sources: sources, at: Date().timeIntervalSince1970, linked: linked.isEmpty ? nil : linked)
+        out["conversation"] = store.append(turn, to: chat?.id).id
         return out
+    }
+
+    /// Past turns from other chats that match a question about "last time".
+    private func recall(_ question: String, store: AssistantStore, except: String?) -> [(question: String, answer: String)] {
+        let turns = store.conversations().filter { $0.id != except }.flatMap(\.turns).filter { !$0.answer.isEmpty && $0.kind != "note" }
+        guard !turns.isEmpty else { return [] }
+        let past = PassageIndex(turns.enumerated().map { Passage(doc: "t\($0.offset)", page: 1, text: $0.element.question + ". " + $0.element.answer) })
+        let hits = past.rank(question).prefix(3).map { turns[$0.index] }
+        let chosen = hits.isEmpty ? Array(turns.sorted { $0.at > $1.at }.prefix(2)) : Array(hits)
+        return chosen.map { (question: $0.question, answer: $0.answer) }
+    }
+
+    /// A study guide: for each deck in scope, the model picks the points that
+    /// matter from a spread of that deck's pages, and every point keeps its page.
+    private func guide(_ question: String, scope: (label: String, docs: Set<String>)?, index: PassageIndex,
+                       vectors: VectorIndex?, names: [String: String], model: Bool) -> (text: String, sources: [SourceRef]) {
+        guard model else { return ("", []) }
+        var docs: [String]
+        var label: String
+        var strays: [String] = []
+        if let scope {
+            var size: [String: Int] = [:]
+            for p in index.passages where scope.docs.contains(p.doc) { size[p.doc, default: 0] += 1 }
+            let core = scope.docs.count > 2
+                ? Scope.core(scope.docs, sizes: size) { GraphBuilder.shared.neighbours(of: $0, limit: 8).map(\.id) }
+                : scope.docs
+            strays = scope.docs.subtracting(core).compactMap { names[$0] }.map { ($0 as NSString).deletingPathExtension }.sorted()
+            docs = Array(core); label = scope.label
+        } else {
+            // No subject or deck named: use the decks the question's words point at.
+            let hits = retrieve(question, related: [], allowed: nil, index: index, vectors: vectors, limit: 12)
+            var order: [String] = []
+            for p in hits where !order.contains(p.doc) { order.append(p.doc) }
+            docs = Array(order.prefix(3)); label = ""
+        }
+        guard !docs.isEmpty else { return ("", []) }
+        docs.sort { (names[$0] ?? "").localizedStandardCompare(names[$1] ?? "") == .orderedAscending }
+        let limit = 6
+        let skipped = max(0, docs.count - limit)
+        docs = Array(docs.prefix(limit))
+
+        var byDoc: [String: [Int]] = [:]
+        for (i, p) in index.passages.enumerated() where docs.contains(p.doc) { byDoc[p.doc, default: []].append(i) }
+
+        var sections: [String] = []
+        var sources: [SourceRef] = []
+        for (n, doc) in docs.enumerated() {
+            let title = ((names[doc] ?? "Document") as NSString).deletingPathExtension
+            set(stage: "Reading \(title) (\(n + 1) of \(docs.count))")
+            let picked = Brain.spread(byDoc[doc] ?? [], index: index, budget: 3400)
+            guard !picked.isEmpty else { continue }
+            let notes = picked.map { (title: title, page: index.passages[$0].page, text: String(index.passages[$0].text.prefix(520))) }
+            let prompt = AssistantPrompt.build(question: "List the five most important points.", notes: notes, budget: 3800)
+            guard let reply = try? Engine.answer(instructions: AssistantPrompt.guide, prompt: prompt) else { continue }
+            var lines: [String] = []
+            for point in AssistantPrompt.points(reply, notes: picked.count).prefix(6) {
+                var marks: [String] = []
+                for local in point.cites.prefix(2) {
+                    let passage = index.passages[picked[local - 1]]
+                    let existing = sources.first { $0.id == passage.doc && $0.page == passage.page && $0.text == passage.text }
+                    let number = existing?.n ?? sources.count + 1
+                    if existing == nil {
+                        sources.append(SourceRef(n: number, id: passage.doc, name: names[passage.doc] ?? "Document",
+                                                 page: passage.page, text: passage.text))
+                    }
+                    marks.append("[\(number)]")
+                }
+                lines.append("- \(point.text) \(marks.joined(separator: " "))")
+            }
+            if !lines.isEmpty { sections.append("## \(title)\n" + lines.joined(separator: "\n")) }
+        }
+        guard !sections.isEmpty else { return ("", []) }
+        var head = label.isEmpty ? "Here is a study guide from the decks closest to that."
+                                 : "Here is your \(label) study guide, from \(sections.count) deck\(sections.count == 1 ? "" : "s")."
+        if !strays.isEmpty {
+            head += " I left out \(strays.joined(separator: ", ")), which the map shows \(strays.count == 1 ? "is" : "are") about something else."
+        }
+        if skipped > 0 { head += " \(skipped) more deck\(skipped == 1 ? " was" : "s were") left out to keep it short; ask for one by name." }
+        return (head + "\n\n" + sections.joined(separator: "\n\n"), sources)
+    }
+
+    /// Passages spread evenly through a deck, preferring pages that explain, up
+    /// to `budget` characters, so the guide covers the deck and not only its start.
+    static func spread(_ candidates: [Int], index: PassageIndex, budget: Int, each: Int = 520) -> [Int] {
+        let prose = candidates.filter { index.proseScore($0) >= 0.4 && index.passages[$0].text.count >= 80 }
+        let pool = prose.count >= 4 ? prose : candidates.filter { index.passages[$0].text.count >= 40 }
+        guard !pool.isEmpty else { return [] }
+        let want = max(1, budget / each)
+        if pool.count <= want { return pool }
+        return (0..<want).map { pool[Int((Double($0) + 0.5) * Double(pool.count) / Double(want))] }
     }
 }

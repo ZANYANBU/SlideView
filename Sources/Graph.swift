@@ -67,6 +67,27 @@ final class GraphBuilder {
         }
     }
 
+    /// The documents the map links to `id`, strongest first. Empty until the map
+    /// has been built, which this starts if nobody has yet.
+    func neighbours(of id: String, limit: Int = 4, atLeast: Double = 0.2) -> [(id: String, weight: Double)] {
+        lock.lock()
+        let edges = built?["edges"] as? [[String: Any]]
+        lock.unlock()
+        guard let edges else { build(force: false); return [] }
+        return GraphBuilder.neighbours(of: id, in: edges, limit: limit, atLeast: atLeast)
+    }
+
+    static func neighbours(of id: String, in edges: [[String: Any]], limit: Int = 4, atLeast: Double = 0.2) -> [(id: String, weight: Double)] {
+        var best: [String: Double] = [:]
+        for e in edges {
+            guard let a = e["a"] as? String, let b = e["b"] as? String, let w = e["w"] as? Double, w >= atLeast else { continue }
+            let other = a == id ? b : (b == id ? a : nil)
+            if let other, other != id { best[other] = max(best[other] ?? 0, w) }
+        }
+        return best.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(limit).map { (id: $0.key, weight: $0.value) }
+    }
+
     // MARK: - Building
 
     private func compute() -> [String: Any] {

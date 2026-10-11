@@ -147,7 +147,37 @@ func route(_ req: HTTPRequest) -> HTTPResponse {
         let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any]
         let question = ((body?["q"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return .json(["error": "no question"], status: 400) }
-        return .json(Brain.shared.ask(String(question.prefix(600))))
+        return .json(Brain.shared.ask(String(question.prefix(600)), conversation: body?["conversation"] as? String))
+
+    case "/api/brain/engine":
+        if req.method == "POST", let id = req.query["set"],
+           id == "auto" || id == "apple" || id.hasPrefix("ollama:") { Engine.choice = id }
+        return .json(Engine.options())
+
+    case "/api/brain/chats":
+        let store = AssistantStore.shared
+        if req.method == "POST", let id = req.query["delete"] { store.deleteConversation(id) }
+        if let id = req.query["id"] {
+            guard let chat = store.conversation(id) else { return .json(["error": "not found"], status: 404) }
+            return .json(["id": chat.id, "title": chat.title, "turns": chat.turns.map(\.json)])
+        }
+        return .json(["chats": store.conversations().map {
+            ["id": $0.id, "title": $0.title, "updated": $0.updated, "turns": $0.turns.count] as [String: Any]
+        }])
+
+    case "/api/brain/notes":
+        let store = AssistantStore.shared
+        if req.method == "POST" {
+            if let id = req.query["delete"] {
+                store.forget(id)
+            } else {
+                let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any]
+                let text = ((body?["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard text.count >= 2 else { return .json(["error": "nothing to remember"], status: 400) }
+                store.remember(text)
+            }
+        }
+        return .json(["notes": store.notes().map { ["id": $0.id, "text": $0.text, "created": $0.created] as [String: Any] }])
 
     case "/api/graph":
         let g = GraphBuilder.shared

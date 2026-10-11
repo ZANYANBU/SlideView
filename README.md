@@ -142,28 +142,58 @@ did not move — dragging a node used to open it by accident.
 
 ## Ask
 
-Press `A` in the library and type a question. SlideView looks through every page of every
-document and shows the passages that match best; click one to open that page.
+Press `A` in the library for the assistant. It answers from your own decks and notes, and every
+answer shows the page it came from. Nothing leaves the Mac.
 
-On a Mac with Apple Intelligence switched on (macOS 26 or later), it also writes a short
-answer from those passages using Apple's on-device model, with a `[1]`-style marker after each
-fact that points at the passage it came from. Without it, you still get the passages.
+- **Ask a question.** It finds the best pages and writes a short answer with a numbered marker
+  after each fact; click a marker to see the passage, click the passage to open the page.
+- **Ask for a study guide.** "FLA study guide" or "key points of Flight Controls" reads each deck
+  of that subject and lists the points that matter, deck by deck, each tied to its page.
+- **Tell it something to remember.** "Remember that my exam is on 20 October" is kept in the side
+  column and used in later answers. Any answer can be kept the same way.
+- **Chats are kept.** Every chat is saved and listed at the side; open one to carry on. A short
+  follow-up ("explain the second point") is read in the light of the chat so far, and "what did I
+  ask last time" looks through earlier chats.
 
-- **Nothing leaves the Mac.** The search is plain keyword ranking (BM25) done in the app, and
-  the model is the one built into macOS. There is no account and no network call.
-- **It answers only from your material.** The model is told to say so when the passages do not
-  contain the answer, but a small model can still misread, so check the page it cites.
-- **Sensitive files are left out**, the same as everywhere else in the app.
-- **It looks for the idea, not only your words.** With the model available it first asks for
-  other words a slide might use ("DFA" also finds "deterministic finite automaton"), and it
-  prefers a page that explains over one that is a table or loose diagram labels.
-- **Diagrams trip it up.** A slide that is only labels on a picture gives the model words in no
-  order, and it can pair them wrongly.
-- **A page opened from an answer goes back to the answer**, and the conversation stays until you
-  clear it or close the app.
+### How it finds the right page
 
-The passages of each document are cached under Application Support and reread only when the
-file changes.
+1. **By words:** BM25 ranking over every page, with the deck's name counted as part of its pages.
+2. **By meaning:** each passage is turned into a vector with the system's own text model
+   (`NLContextualEmbedding`), and the nearest ones to the question are found. This is noisy on
+   its own, so the two rankings are fused and each covers for the other.
+3. **By related words:** the model is asked what else a slide about this might say, so "DFA" also
+   finds "deterministic finite automaton".
+4. **By the map:** decks the map links to the best matches join the search, and are offered under
+   the answer. A subject's study guide leaves out files the map shows are about something else.
+5. **Prose first:** a page that explains outranks a table or loose diagram labels.
+
+### Which model writes the answer
+
+Pick it at the bottom of the side column.
+
+- **Apple Intelligence** (macOS 26 or later, switched on in System Settings). Nothing to install.
+  It is a small model: good at pulling facts out of a page, weak at reasoning.
+- **Any Ollama model** on this Mac, the same ones [Aether](https://github.com/ZANYANBU/aether)
+  uses. Start Ollama and its models appear in the list. They are usually larger, so they are given
+  more of each page.
+
+Without either, the assistant still finds and shows the matching passages.
+
+### Its instructions, and where things are kept
+
+Everything is plain files in `~/Library/Application Support/SlideView/assistant`:
+`instructions.md` (how the assistant behaves; edit it to change that), `notes.json` (what it
+remembers) and `chats/` (one file per chat). The passages and vectors of each document are cached
+in `passages/` and redone only when the file changes.
+
+### What it gets wrong
+
+- **Diagrams.** A slide that is only labels on a picture gives the model words in no order, and it
+  can pair them wrongly.
+- **It is a small model.** It can misread a page or pad an answer. Check the page it cites.
+- **Sensitive files are never read**, the same as everywhere else in the app.
+
+From the map, shift-click a deck to ask for its study guide.
 
 ## Prior art, and why none of it is vendored
 
